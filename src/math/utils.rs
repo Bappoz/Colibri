@@ -123,6 +123,7 @@ impl Vec4d {
 //                                     Mat4x4
 //
 
+#[derive(Debug, Copy, Clone)]
 pub struct Mat4x4 {
     m: [Vec4d; 4],
 }
@@ -219,6 +220,49 @@ impl Mat4x4 {
                 Vec4d::new(c, -s, 0.0, 0.0),
                 Vec4d::new(s, c, 0.0, 0.0),
                 Vec4d::new(0.0, 0.0, 1.0, 0.0),
+                Vec4d::new(0.0, 0.0, 0.0, 1.0),
+            ],
+        }
+    }
+
+    /// Responsável por criar a matriz "câmera":
+    /// Para onde a camera olha (target)
+    /// a partir de "Pos" usando "up" como referência
+    pub fn point_at(pos: Vec3d, target: Vec3d, up: Vec3d) -> Self {
+        let forward = (target - pos).normalize();
+        let a = forward * up.dot_product(&forward);
+        let up = (up - a).normalize();
+
+        let right = up.cross(&forward);
+        Self {
+            m: [
+                Vec4d::new(right.x(), up.x(), forward.x(), pos.x()),
+                Vec4d::new(right.y(), up.y(), forward.y(), pos.y()),
+                Vec4d::new(right.z(), up.z(), forward.z(), pos.z()),
+                Vec4d::new(0.0, 0.0, 0.0, 1.0),
+            ],
+        }
+    }
+
+    /// Inverte "rapidamente" uma matriz rotação + translação.
+    /// Transpõe bloco 3x3 e racalcula a transalação.
+    /// !!! só funciona para esse tipo de matriz (Ortonormal)
+    pub fn quick_inverse(&self) -> Self {
+        let right = Vec3d::new(self.m[0].x(), self.m[1].x(), self.m[2].x());
+        let up = Vec3d::new(self.m[0].y(), self.m[1].y(), self.m[2].y());
+        let forward = Vec3d::new(self.m[0].z(), self.m[1].z(), self.m[2].z());
+        let pos = Vec3d::new(self.m[0].w(), self.m[1].w(), self.m[2].w());
+
+        Self {
+            m: [
+                Vec4d::new(right.x(), right.y(), right.z(), -right.dot_product(&pos)),
+                Vec4d::new(up.x(), up.y(), up.z(), -up.dot_product(&pos)),
+                Vec4d::new(
+                    forward.x(),
+                    forward.y(),
+                    forward.z(),
+                    -forward.dot_product(&pos),
+                ),
                 Vec4d::new(0.0, 0.0, 0.0, 1.0),
             ],
         }
