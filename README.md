@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/public/colibri.svg" width="110" alt="Colibri" />
+  <img width="300" alt="colibri" src="https://github.com/user-attachments/assets/c9f6836e-5623-42c4-b955-27c0015587bd" />
   <h1>Colibri</h1>
   <p><strong>Uma engine de jogos ECS — 3D e 2D — escrita em Rust, construída do zero, uma etapa testável por vez.</strong></p>
 </div>
