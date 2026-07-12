@@ -1,0 +1,97 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Assets, handles e pipeline Blender/glTF"
+tagline: "Carregar glTF, gerenciar handles e importar do Blender."
+phase: "Fase D · Cena & Assets"
+status: "planned"
+slug: "/stages/10-assets-blender"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Parar de carregar `.obj` na mão dentro do `Engine`. Construir um **gerenciador de
+assets**: cada mesh/textura é carregada uma vez, guardada num arena, e referenciada
+por um **handle** leve (`MeshHandle(usize)` da etapa 08). E dar o salto de `.obj`
+para **glTF** — o formato que o Blender exporta com materiais, hierarquia e
+animação.
+
+## Por que handles (e não `Rc<Mesh>`)
+
+<Mermaid code={`
+flowchart LR
+  A["Assets&lt;Mesh&gt;<br/>Vec&lt;Mesh&gt;"] --> h1["MeshHandle(0)"]
+  A --> h2["MeshHandle(1)"]
+  e1["entidade cubo"] --> h1
+  e2["entidade cubo 2"] --> h1
+  e3["entidade nave"] --> h2
+`} />
+
+Duas entidades usam o mesmo cubo compartilhando **um `usize`**, não uma cópia da
+mesh. O handle é `Copy`, cabe num componente, e o arena controla o tempo de vida —
+sem contadores atômicos, sem ciclos.
+
+```rust
+pub struct Assets<T> { items: Vec<T> }
+impl<T> Assets<T> {
+    pub fn add(&mut self, item: T) -> Handle<T> { /* push, retorna índice */ }
+    pub fn get(&self, h: Handle<T>) -> &T { &self.items[h.0] }
+}
+```
+
+## Por que glTF
+
+`.obj` só carrega geometria. **glTF 2.0** é o "JPEG do 3D": traz malhas,
+materiais PBR, hierarquia de nós, skinning e animação — e o Blender exporta
+nativamente. É a ponte natural entre a etapa 09 (hierarquia) e a 12 (PBR).
+
+<Mermaid code={`
+flowchart LR
+  B["Blender"] -->|export .glb| G["arquivo glTF/GLB"]
+  G -->|crate gltf| L["loader"]
+  L --> M["Assets&lt;Mesh&gt;"]
+  L --> T["Assets&lt;Texture&gt;"]
+  L --> S["spawn de entidades<br/>com hierarquia (etapa 09)"]
+`} />
+
+## Fluxo com o Blender
+
+1. Modele/importe no Blender.
+2. **File → Export → glTF 2.0 (.glb)** (binário, self-contained).
+3. Carregue com o crate [`gltf`](https://docs.rs/gltf): itere `nodes`, monte
+   `Transform` (etapa 09), leia `mesh.primitives` (posições, normais, UVs) e
+   materiais.
+4. Cada nó do glTF vira uma **entidade** com `Parent` conforme a hierarquia.
+
+## Ferramentas do Rust
+
+| Crate | Uso |
+|---|---|
+| [`gltf`](https://docs.rs/gltf) | Ler `.gltf`/`.glb` (geometria, materiais, nós, animação) |
+| [`image`](https://docs.rs/image) | Decodificar as texturas referenciadas |
+| Continuar com [`tobj`](https://docs.rs/tobj) | Fallback simples p/ `.obj` de teste |
+| [`notify`](https://docs.rs/notify) *(prévia da etapa 15)* | Detectar mudança no arquivo → recarregar |
+
+## Como testar
+
+- Exporte um modelo simples do Blender (ex.: um `Suzanne` com material) para
+  `.glb` e carregue-o. Ele deve aparecer com a hierarquia e as sub-malhas certas.
+- Faça `spawn` do **mesmo** handle em 3 entidades e confirme (via profiler ou
+  contagem) que a mesh foi carregada **uma vez** só.
+- Reexporte do Blender com uma mudança e recarregue (manual por ora): a cena
+  reflete a alteração.
+
+## Definition of Done
+
+- [ ] `Assets<T>` + `Handle<T>` (`Copy`) substituindo o load direto no `Engine`
+- [ ] Loader glTF trazendo geometria + hierarquia como entidades
+- [ ] Texturas do glTF em `Assets<Texture>`
+- [ ] Um `.glb` do Blender renderiza corretamente
+- [ ] Mesh compartilhada entre entidades sem duplicar dados
+
+## Fontes de pesquisa
+
+- [Especificação glTF 2.0 (Khronos)](https://www.khronos.org/gltf/)
+- [`gltf` crate — exemplos](https://github.com/gltf-rs/gltf)
+- [Blender — exportando glTF](https://docs.blender.org/manual/en/latest/addons/import_export/scene_gltf2.html)
+- [Bevy — como o `bevy_gltf` mapeia nós → entidades](https://github.com/bevyengine/bevy/tree/main/crates/bevy_gltf) *(referência de arquitetura)*

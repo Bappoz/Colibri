@@ -1,0 +1,95 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Input acumulado + câmera livre"
+tagline: "Estado de teclado/mouse e uma câmera FPS que anda pela cena."
+phase: "Fase B · Interação"
+status: "planned"
+slug: "/stages/04-input-camera"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Sair da câmera fixa. Duas peças:
+
+1. **Estado de input acumulado** — o `winit` é orientado a **eventos** (recebe
+   "tecla pressionada/solta"), não a polling. Precisamos de uma struct que acumule
+   o estado para o `update` perguntar "a tecla W está segurada agora?".
+2. **Câmera livre (FPS)** — posição + orientação, com `Mat4x4::point_at` e
+   `Mat4x4::quick_inverse` para gerar a matriz de visão.
+
+## O descompasso winit × polling
+
+<Mermaid code={`
+sequenceDiagram
+  participant W as winit
+  participant I as InputState
+  participant U as update()
+  W->>I: KeyDown(W)  → keys.insert(W)
+  W->>I: KeyUp(W)    → keys.remove(W)
+  Note over U: no frame, pergunta o estado
+  U->>I: is_held(W)? → true/false
+  U->>U: move a câmera por dt
+`} />
+
+No engine estilo OneLoneCoder você escrevia `GetKey('W').bHeld`. Aqui, o
+`WindowEvent::KeyboardInput` chega **uma vez** na transição. A solução é um
+`HashSet`/bitset preenchido em `Engine::input` e consultado em `Engine::update`.
+
+```rust
+#[derive(Default)]
+pub struct InputState {
+    held: std::collections::HashSet<KeyCode>,
+    mouse_delta: (f64, f64),
+}
+impl InputState {
+    pub fn is_held(&self, k: KeyCode) -> bool { self.held.contains(&k) }
+    pub fn end_frame(&mut self) { self.mouse_delta = (0.0, 0.0); } // zera deltas
+}
+```
+
+## A câmera
+
+Guarde `position: Vec3d`, `yaw`, `pitch`. A cada frame:
+
+1. Deriva o vetor **forward** a partir de yaw/pitch.
+2. `WASD` desloca `position` ao longo de forward/right; mouse ajusta yaw/pitch.
+3. `view = Mat4x4::point_at(pos, pos + forward, up).quick_inverse()`.
+4. Pipeline vira `proj * view * world` (hoje é só `proj * world`).
+
+> **Convenção de matriz de novo:** `point_at` e `quick_inverse` já foram
+> derivados para a convenção de **coluna** deste repositório. Não copie a versão
+> de vetor-linha do OLC — ela sai transposta.
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| `winit::keyboard::KeyCode` | Identificar teclas de forma estável |
+| `DeviceEvent::MouseMotion` | Delta de mouse **relativo** (ideal p/ FPS) |
+| `Window::set_cursor_grab` + `set_cursor_visible(false)` | Prender o mouse na janela |
+| `#[derive(Clone, Copy)]` em `Mat4x4` | Reusar proj/view por vértice sem mover |
+
+## Como testar
+
+```bash
+cargo run
+```
+
+- `WASD` move; mouse olha em volta; a cena responde suave (multiplicado por `dt`).
+- Aproxime-se de um objeto: graças ao clipping (etapa 02), nada explode.
+- Movimento independe do FPS (dois PCs diferentes → mesma velocidade percebida).
+
+## Definition of Done
+
+- [ ] `InputState` acumula teclas e deltas de mouse
+- [ ] `Engine::input` popula o estado; `update` consulta
+- [ ] Câmera FPS com yaw/pitch e `point_at`/`quick_inverse`
+- [ ] Pipeline usa `proj * view * world`
+- [ ] Movimento escalado por `dt`
+
+## Fontes de pesquisa
+
+- [winit — accessing device events / keyboard](https://docs.rs/winit/latest/winit/event/enum.DeviceEvent.html)
+- [Learn OpenGL — Camera](https://learnopengl.com/Getting-started/Camera) *(a matemática do FPS)*
+- [OLC — parte 4 (câmera/point-at)](https://www.youtube.com/watch?v=HXSuNxpCzdM) *(re-derive p/ coluna)*

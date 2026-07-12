@@ -1,0 +1,80 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Renderer 2D: sprites, batching e texto"
+tagline: "Sprite batching, câmera 2D, atlas e fontes."
+phase: "Fase F · 2D"
+status: "planned"
+slug: "/stages/13-render-2d"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Adicionar a camada **2D** — sobre o **mesmo ECS** e a **mesma GPU**. Um sprite nada
+mais é que um quad texturizado com projeção ortográfica. O desafio de performance é
+o **batching**: desenhar 10 000 sprites em pouquíssimas draw calls.
+
+> Ponto forte da arquitetura: 2D e 3D compartilham World, Assets, input e o
+> pipeline wgpu. A camada 2D é *pequena* porque quase tudo já existe.
+
+## Ortográfica em vez de perspectiva
+
+<Mermaid code={`
+flowchart LR
+  S["Sprite (Transform 2D + Handle&lt;Texture&gt;)"] --> B["sprite batcher<br/>agrupa por textura/atlas"]
+  B --> Q["gera 1 grande vertex buffer<br/>(quads)"]
+  Q --> D["1 draw call por atlas"]
+  cam["Camera2D (ortográfica)"] --> D
+`} />
+
+- **`Camera2D`** — matriz ortográfica (sem divisão perspectiva).
+- **`Sprite { texture, size, color }`** + `Transform` (posição/rotação/escala 2D).
+- **Batching** — junte todos os sprites que usam a mesma textura/atlas num único
+  buffer de quads e emita **uma** draw call.
+
+## Texto = sprites de glifos
+
+Renderizar fonte é: rasterizar glifos para um **atlas** (textura), e desenhar cada
+caractere como um sprite recortando a região certa do atlas. Vai direto no mesmo
+batcher.
+
+## Componentes 2D
+
+```rust
+struct Sprite { texture: Handle<Texture>, size: Vec2, color: [f32; 4] }
+struct Transform2D { position: Vec2, rotation: f32, scale: Vec2 }
+struct Camera2D { zoom: f32 }
+struct Text { content: String, font: Handle<Font>, size: f32 }
+```
+
+## Ferramentas do Rust
+
+| Crate | Uso |
+|---|---|
+| [`glyphon`](https://docs.rs/glyphon) ou [`fontdue`](https://docs.rs/fontdue) | Rasterizar glifos p/ atlas de texto |
+| [`guillotiere`](https://docs.rs/guillotiere) | Empacotar sprites/glifos num atlas |
+| `wgpu` instancing | Alternativa ao batch por vertex buffer gigante |
+| `image` | Carregar spritesheets |
+
+## Como testar
+
+- Desenhe **um sprite** de `assets/minijario.png` na tela em projeção ortográfica.
+- Mova a `Camera2D` e faça zoom: o sprite responde corretamente.
+- **Stress test:** 10 000 sprites animados a 60 fps com um punhado de draw calls
+  (verifique no [wgpu profiler / RenderDoc](https://renderdoc.org/)).
+- Renderize uma string de texto e confirme kerning/posição.
+
+## Definition of Done
+
+- [ ] `Camera2D` ortográfica funcionando
+- [ ] `Sprite` + `Transform2D` renderizando
+- [ ] Sprite batching (muitos sprites, poucas draw calls)
+- [ ] Atlas de texturas
+- [ ] Texto via atlas de glifos
+- [ ] 10k sprites a 60 fps
+
+## Fontes de pesquisa
+
+- [Learn wgpu — instancing](https://sotrh.github.io/learn-wgpu/beginner/tutorial7-instancing/)
+- [Bevy — como funciona o `bevy_sprite` batching](https://github.com/bevyengine/bevy/tree/main/crates/bevy_sprite)
+- [`glyphon` — texto acelerado por GPU](https://github.com/grovesNL/glyphon)

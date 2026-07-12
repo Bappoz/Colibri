@@ -1,0 +1,117 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Fundamentos de ECS + entidades"
+tagline: "Por que ECS, e entidades como índices geracionais."
+phase: "Fase C · Núcleo ECS"
+status: "planned"
+slug: "/stages/05-ecs-fundamentos"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Esta é a **virada de chave** da Colibri. Hoje o `Engine` é um monólito: ele é dono
+da mesh, do `theta`, da projeção. Isso não escala para um jogo com centenas de
+objetos, cada um com comportamento diferente. A partir daqui construímos um
+**ECS** (Entity-Component-System) próprio. Esta etapa entrega só a base: a
+**entidade** como um identificador geracional.
+
+## O que é ECS (e por que Rust ama isso)
+
+- **Entity** — só um ID. Não tem dados nem lógica.
+- **Component** — dado puro anexado a uma entidade (`Transform`, `Mesh`, `Velocity`).
+- **System** — função que roda sobre todas as entidades que têm certos componentes.
+
+<Mermaid code={`
+flowchart LR
+  subgraph Entidades
+    e1(("e1"))
+    e2(("e2"))
+    e3(("e3"))
+  end
+  e1 --- T1["Transform"]
+  e1 --- M1["Mesh"]
+  e2 --- T2["Transform"]
+  e2 --- M2["Mesh"]
+  e2 --- V2["Velocity"]
+  e3 --- T3["Transform"]
+  T1 & T2 & T3 --> Sr["System: render"]
+  V2 --> Sm["System: movimento"]
+`} />
+
+Por que combina com Rust: dados contíguos por tipo = **cache-friendly** e
+paralelizável; o borrow checker adora arrays homogêneos em vez de grafos de
+`Rc<RefCell<…>>`; composição em vez de herança evita a "árvore de GameObject".
+
+## Entidade = índice + geração
+
+O problema clássico: você remove a entidade 5, cria outra que reusa o slot 5, e um
+ponteiro antigo passa a apontar para a entidade errada (**use-after-free lógico**).
+Solução: cada ID carrega uma **geração**. Reusar o slot incrementa a geração, então
+o handle antigo fica inválido.
+
+```rust
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Entity { index: u32, generation: u32 }
+
+pub struct Entities {
+    generations: Vec<u32>,
+    free: Vec<u32>, // slots reciclados
+}
+impl Entities {
+    pub fn spawn(&mut self) -> Entity { /* reusa free ou empurra novo */ }
+    pub fn despawn(&mut self, e: Entity) { /* generation += 1; free.push */ }
+    pub fn is_alive(&self, e: Entity) -> bool {
+        self.generations.get(e.index as usize) == Some(&e.generation)
+    }
+}
+```
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| `u32` index + generation | Handle barato, `Copy`, comparável |
+| [`slotmap`](https://docs.rs/slotmap) *(referência)* | Implementa exatamente esse padrão — leia o código |
+| Estude [`hecs`](https://docs.rs/hecs) e [`bevy_ecs`](https://docs.rs/bevy_ecs) | Duas filosofias de storage (archetype) |
+
+> **Decisão de escopo:** escrever o próprio ECS é o ponto de *aprendizado*. Se em
+> algum momento quiser focar no jogo e não no ECS, `hecs` é um drop-in enxuto.
+> Documente essa escolha — ela define o resto da lib.
+
+## Como testar
+
+Aqui o teste é **unitário**, não visual:
+
+```rust
+#[test]
+fn generational_ids_invalidate() {
+    let mut es = Entities::default();
+    let a = es.spawn();
+    es.despawn(a);
+    let b = es.spawn();          // reusa o slot
+    assert!(!es.is_alive(a));    // handle antigo morto
+    assert!(es.is_alive(b));
+    assert_eq!(a.index, b.index); // mesmo índice...
+    assert_ne!(a.generation, b.generation); // ...geração diferente
+}
+```
+
+```bash
+cargo test entities
+```
+
+## Definition of Done
+
+- [ ] `Entity { index, generation }` `Copy`
+- [ ] `spawn`/`despawn` com reciclagem de slots
+- [ ] `is_alive` rejeita handles de geração antiga
+- [ ] Testes unitários verdes
+- [ ] Decisão "ECS próprio vs. crate" registrada no README
+
+## Fontes de pesquisa
+
+- [Sander Mertens — "ECS FAQ"](https://github.com/SanderMertens/ecs-faq)
+- ["Building an ECS" — Ryan Fleury / handmade](https://www.rfleury.com/) e a série do [Bevy ECS](https://bevyengine.org/learn/)
+- [Catherine West — "Using Rust for Game Development" (RustConf keynote)](https://www.youtube.com/watch?v=aKLntZcp27M) — o argumento canônico de ECS em Rust
+- [`slotmap` — docs](https://docs.rs/slotmap)

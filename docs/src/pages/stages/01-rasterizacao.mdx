@@ -1,0 +1,91 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Triângulo preenchido + Z-buffer"
+tagline: "Do arame ao sólido: superfícies opacas com profundidade correta."
+phase: "Fase A · Rasterizador software"
+status: "next"
+slug: "/stages/01-rasterizacao"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Trocar `draw_line` por um **rasterizador de triângulo preenchido** e adicionar um
+**Z-buffer** (buffer de profundidade), para que faces mais próximas escondam as
+mais distantes. Ao final, o cubo aparece **sólido** e correto de qualquer ângulo.
+
+## Conceito
+
+Rasterizar um triângulo = decidir, para cada pixel dentro dele, se ele pertence
+ao triângulo e qual sua profundidade. Duas abordagens comuns:
+
+<Mermaid code={`
+flowchart TD
+  T["3 vértices em tela<br/>(x, y, z, w)"] --> BB["bounding box do triângulo"]
+  BB --> L["para cada pixel na box"]
+  L --> E{"dentro do triângulo?<br/>(coords baricêntricas ≥ 0)"}
+  E -->|não| skip["pula"]
+  E -->|sim| Z{"z interpolado &lt; zbuffer?"}
+  Z -->|não| skip
+  Z -->|sim| P["pinta pixel +<br/>atualiza zbuffer"]
+`} />
+
+A abordagem **baricêntrica** (varre a bounding box e testa cada pixel) é a mais
+fácil de acertar e paraleliza bem depois. As coordenadas baricêntricas ainda dão
+de graça a **interpolação** de profundidade, cor e UV.
+
+## Passo a passo
+
+1. Crie `depth: Vec<f32>` do tamanho `width * height`, resetado para `+∞` a cada frame.
+2. Para cada triângulo, calcule a **bounding box** em tela (clampada à janela).
+3. Para cada pixel, calcule os pesos baricêntricos `(w0, w1, w2)`.
+4. Se algum peso for negativo, o pixel está fora — pule.
+5. Interpole `z = w0*z0 + w1*z1 + w2*z2`. Se `z < depth[i]`, pinte e atualize.
+6. Comece com **cor sólida por face**; a interpolação de cor/UV vem na etapa 03.
+
+```rust
+// esboço — assinatura sugerida
+fn raster_triangle(
+    color: &mut [u32],
+    depth: &mut [f32],
+    w: usize, h: usize,
+    v: [Vertex2D; 3], // x,y em tela + z (profundidade) + 1/w p/ perspectiva
+    shade: u32,
+) { /* bounding box + teste baricêntrico + z-test */ }
+```
+
+> **Cuidado com a orientação:** defina uma convenção de winding (ex.: sentido
+> horário = frente). Isso conversa direto com o back-face culling da etapa 02.
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| `Vec<f32>` para o depth buffer | Simples e cache-friendly |
+| `f32` vs `f64` | Use `f32` no buffer de profundidade (metade da memória, suficiente) |
+| [`rayon`](https://docs.rs/rayon) *(opcional, mais tarde)* | Paralelizar por linha/tile com `par_chunks_mut` |
+
+## Como testar
+
+```bash
+cargo run
+```
+
+- Cubo **sólido**, sem faces de trás vazando por cima das da frente.
+- Gire (o `theta` já anima): nenhuma face "pisca" na frente de outra.
+- Teste rápido de sanidade: pinte cada face de uma cor diferente e confirme que
+  só três faces aparecem por vez.
+
+## Definition of Done
+
+- [ ] `depth` resetado por frame
+- [ ] Triângulos preenchidos por baricêntricas
+- [ ] Z-test descarta pixels ocultos
+- [ ] Cubo sólido e coerente girando 360°
+- [ ] (bônus) cores por face para depurar winding
+
+## Fontes de pesquisa
+
+- [Scratchapixel — Rasterization Stage / barycentric coordinates](https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation/rasterization-stage.html)
+- [tinyrenderer — lição 2 e 3 (triângulo + z-buffer)](https://github.com/ssloy/tinyrenderer/wiki)
+- [Fabian Giesen — "Optimizing the basic rasterizer"](https://fgiesen.wordpress.com/2013/02/08/triangle-rasterization-in-practice/)

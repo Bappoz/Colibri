@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "colibri-docs",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "docs", "run", "dev"],
+      "port": 4321
+    }
+  ]
+}

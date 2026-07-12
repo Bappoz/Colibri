@@ -1,0 +1,110 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Portar o renderer para o ECS"
+tagline: "Cada objeto vira entidade; render vira um sistema."
+phase: "Fase C · Núcleo ECS"
+status: "planned"
+slug: "/stages/08-ecs-renderer"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Colher o fruto das etapas 05–07: **dissolver o monólito `Engine`**. A mesh, o
+`theta` e a câmera saem de dentro dele e viram **componentes** de entidades. O
+render passa a ser só mais um **sistema** que roda uma query. Visualmente nada
+muda — mas a arquitetura vira a de uma engine de verdade.
+
+## Antes × depois
+
+<Mermaid code={`
+flowchart LR
+  subgraph Antes
+    E["Engine { mesh, theta, proj }"] --> R1["render() faz tudo"]
+  end
+  subgraph Depois
+    W["World"] --> q["query&lt;(&amp;Transform, &amp;MeshHandle)&gt;"]
+    q --> RS["render_system(world, framebuffer)"]
+    CAM["entidade Camera<br/>(Transform + Camera)"] --> RS
+  end
+`} />
+
+## Os componentes mínimos
+
+```rust
+struct Transform { position: Vec3d, rotation: Vec3d, scale: Vec3d }
+struct MeshHandle(usize);   // índice num arena de meshes (ver etapa 10)
+struct Camera { fov: f32, near: f32, far: f32 }
+struct Spin(f32);           // exemplo: velocidade de rotação (substitui theta)
+```
+
+O antigo cubo giratório vira:
+
+```rust
+world.spawn((
+    Transform::default(),
+    MeshHandle(cube_id),
+    Spin(1.0),
+));
+world.spawn((Transform::at(0.0, 0.0, -3.0), Camera::default()));
+```
+
+## O render como sistema
+
+```rust
+fn render_system(world: &World, fb: &mut Framebuffer) {
+    let (cam_t, cam) = world.single::<(&Transform, &Camera)>();
+    let view = view_from(cam_t);
+    let proj = perspective(cam, fb.aspect());
+    for (t, mesh) in world.query::<(&Transform, &MeshHandle)>() {
+        let world_m = model_matrix(t);
+        raster_mesh(fb, proj * view * world_m, meshes.get(mesh.0));
+    }
+}
+```
+
+E o `spin_system` substitui a linha `self.theta += dt`:
+
+```rust
+fn spin_system(world: &mut World, dt: f32) {
+    for (t, spin) in world.query::<(&mut Transform, &Spin)>() {
+        t.rotation.set_y(t.rotation.y() + spin.0 * dt);
+    }
+}
+```
+
+> **Onde o `Engine` fica?** Ele encolhe para um **host**: dono da janela, do
+> framebuffer e do `World`. No `about_to_wait`, chama `schedule.run(world, dt)` e
+> `render_system`. `App` continua só roteando eventos do winit.
+
+## Ferramentas do Rust
+
+- Reuse tudo das etapas 01–07: o rasterizador vira função pura `raster_mesh`.
+- `world.single::<T>()` — helper para componentes de instância única (a câmera).
+- Mantenha o `Framebuffer` como um wrapper fino sobre o buffer do `softbuffer`.
+
+## Como testar
+
+```bash
+cargo run
+```
+
+- O cubo gira **exatamente como antes** — prova de que a refatoração preservou o
+  comportamento.
+- Faça `spawn` de **3 cubos** com `Transform` e `Spin` diferentes: os três
+  aparecem e giram em velocidades distintas, **sem tocar no código de render**.
+  Esse é o momento "aha" do ECS.
+
+## Definition of Done
+
+- [ ] `Engine` não é mais dono de mesh/theta/proj
+- [ ] `Transform`, `MeshHandle`, `Camera`, `Spin` como componentes
+- [ ] `render_system` e `spin_system` rodando via `Schedule`
+- [ ] Múltiplas entidades renderizam sem alterar o sistema de render
+- [ ] `cargo run` idêntico ao comportamento anterior (1 cubo)
+
+## Fontes de pesquisa
+
+- [Bevy — "Transforms"](https://bevy-cheatbook.github.io/fundamentals/transforms.html)
+- [Bevy — como um `render system` consome queries](https://bevy-cheatbook.github.io/programming/systems.html)
+- Releia sua própria etapa 07: a ergonomia da query define o quão limpo isto fica.

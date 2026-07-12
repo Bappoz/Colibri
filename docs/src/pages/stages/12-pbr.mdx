@@ -1,0 +1,89 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Materiais PBR + iluminação real"
+tagline: "Metallic-roughness, normal maps e múltiplas luzes."
+phase: "Fase E · GPU"
+status: "planned"
+slug: "/stages/12-pbr"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Sair do sombreamento "de brinquedo" (etapa 03) para **PBR** (Physically Based
+Rendering) — o modelo que faz metal parecer metal e plástico parecer plástico, e
+que casa exatamente com o que o Blender exporta no glTF (etapa 10). Tudo agora roda
+em fragment shader WGSL na GPU.
+
+## O que é PBR, em uma frase
+
+Um modelo de iluminação baseado na **conservação de energia** e em parâmetros
+físicos: **albedo** (cor base), **metallic** (0 = dielétrico, 1 = metal),
+**roughness** (liso ↔ áspero) e **normal map** (detalhe de superfície sem
+geometria extra).
+
+<Mermaid code={`
+flowchart LR
+  A["albedo"] --> BRDF
+  M["metallic"] --> BRDF
+  R["roughness"] --> BRDF
+  N["normal (do normal map)"] --> BRDF
+  L["luzes"] --> BRDF["BRDF Cook-Torrance"]
+  BRDF --> C["cor final do fragmento"]
+`} />
+
+## Componentes e materiais no ECS
+
+```rust
+struct Material {
+    albedo: Handle<Texture>,
+    metallic_roughness: Handle<Texture>,
+    normal: Handle<Texture>,
+    base_color: [f32; 4],
+}
+struct MaterialHandle(usize);
+struct Light { kind: LightKind, color: Vec3d, intensity: f32 } // dir/point/spot
+```
+
+O `render_system` agora agrupa por material (menos troca de bind group) e passa as
+luzes da cena (query `&Light`) como um uniform/storage buffer para o shader.
+
+## Passo a passo
+
+1. **Uma luz direcional + BRDF Cook-Torrance** no fragment shader (o coração do PBR).
+2. Ligar as texturas **albedo** e **metallic-roughness** do glTF.
+3. Adicionar **normal mapping** (precisa de tangentes — o glTF pode fornecer).
+4. Suportar **múltiplas luzes** (loop no shader ou storage buffer).
+5. Toques de realismo: correção **gamma/sRGB** e um tonemap simples (Reinhard/ACES).
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| WGSL (fragment shader) | Implementar a BRDF |
+| `wgpu` bind groups | Texturas + samplers + buffer de luzes |
+| glTF `metallic_roughness` | Já vem no formato certo do Blender |
+| Storage buffers | Passar N luzes de tamanho dinâmico |
+
+## Como testar
+
+- Uma **esfera** com roughness variando de 0→1 em colunas: de espelhado a fosco.
+- **Metallic** 0 vs 1 no mesmo modelo: dielétrico vs metal claramente distintos.
+- Ligue um **normal map** de tijolos num plano liso: relevo aparente sem geometria.
+- Compare lado a lado com o **render do Blender** (Eevee/Cycles) do mesmo glTF — as
+  aparências devem convergir. Esse é o teste de "PBR correto".
+
+## Definition of Done
+
+- [ ] BRDF Cook-Torrance com 1 luz direcional
+- [ ] Albedo + metallic-roughness do glTF aplicados
+- [ ] Normal mapping com tangentes
+- [ ] Múltiplas luzes (dir/point)
+- [ ] Correção sRGB + tonemap
+- [ ] Aparência convergindo com o Blender no mesmo asset
+
+## Fontes de pesquisa
+
+- [Learn OpenGL — PBR (Theory / Lighting)](https://learnopengl.com/PBR/Theory) — a melhor introdução
+- [Filament — Physically Based Rendering (Google)](https://google.github.io/filament/Filament.html) — a referência rigorosa
+- [glTF — modelo de material metallic-roughness](https://www.khronos.org/gltf/)

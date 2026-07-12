@@ -1,0 +1,106 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Migrar para a GPU com wgpu"
+tagline: "Surface, pipeline, buffers e shaders WGSL."
+phase: "Fase E · GPU"
+status: "planned"
+slug: "/stages/11-wgpu"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Tirar a rasterização da CPU e entregá-la à GPU via **wgpu** (a API gráfica
+moderna e portável do ecossistema Rust — roda sobre Vulkan/Metal/DX12/WebGPU). O
+`softbuffer` sai; entra uma `Surface` da wgpu. O ganho: de milhares para milhões
+de triângulos por frame.
+
+> Você **não joga fora** o trabalho anterior. O rasterizador software foi o
+> laboratório onde você entendeu cada etapa que a GPU faz. Agora você comanda essas
+> etapas por configuração, não por loop de pixel.
+
+## O modelo mental muda
+
+<Mermaid code={`
+flowchart LR
+  subgraph CPU
+    W["World / ECS"] --> up["upload:<br/>vertex/index/uniform buffers"]
+  end
+  up --> GPU
+  subgraph GPU
+    VS["vertex shader (WGSL)"] --> RAST["rasterização (fixa)"]
+    RAST --> FS["fragment shader (WGSL)"]
+    FS --> FB["framebuffer / surface"]
+  end
+`} />
+
+Em vez de você escrever o loop de pixels, você:
+1. **Sobe** vértices/índices para *buffers* na GPU.
+2. Escreve um **vertex shader** e um **fragment shader** em WGSL.
+3. Configura um **render pipeline** (formato de vértice, blending, depth).
+4. Grava um **command buffer** por frame e o submete.
+
+## Passo a passo (incremental!)
+
+1. `Instance → Surface → Adapter → Device + Queue`. Só limpar a tela de azul já é
+   vitória — prova que a wgpu está viva.
+2. Desenhar **um triângulo** hardcoded no shader (o "hello triangle").
+3. Subir a `Mesh` real como vertex/index buffer.
+4. Adicionar uma **uniform** com `proj * view * world` (bind group).
+5. Ligar **depth buffer** (a GPU faz o z-test que você fez à mão na etapa 01).
+6. Trocar o `render_system` (etapa 08) para emitir draw calls em vez de pintar
+   pixels.
+
+```wgsl
+// shader.wgsl (mínimo)
+@group(0) @binding(0) var<uniform> mvp: mat4x4<f32>;
+
+@vertex
+fn vs_main(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return mvp * vec4<f32>(pos, 1.0);
+}
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.8, 0.8, 0.85, 1.0);
+}
+```
+
+## Ferramentas do Rust
+
+| Crate | Uso |
+|---|---|
+| [`wgpu`](https://docs.rs/wgpu) | API gráfica (substitui `softbuffer`) |
+| [`bytemuck`](https://docs.rs/bytemuck) | `#[derive(Pod, Zeroable)]` p/ enviar structs como bytes |
+| [`glam`](https://docs.rs/glam) *(considere)* | Matemática SIMD — ou promova seu `Mat4x4` a `Pod` |
+| [`pollster`](https://docs.rs/pollster) | Bloquear nas chamadas `async` da wgpu no setup |
+
+> **Decisão:** manter seu `math::utils` ou adotar `glam`? A GPU quer layout de
+> memória exato (`repr(C)`, `Pod`). `glam` já resolve isso e é padrão de mercado.
+> Documente a escolha — afeta todo o código de upload.
+
+## Como testar
+
+```bash
+cargo run
+```
+
+- Marco 1: janela azul (surface configurada).
+- Marco 2: triângulo colorido (pipeline + shader ok).
+- Marco 3: o cubo do ECS, agora pela GPU, girando — idêntico à versão software,
+  mas com folga de performance enorme.
+- Suba **10 000 cubos**: o que travava na CPU roda liso.
+
+## Definition of Done
+
+- [ ] `Surface`/`Device`/`Queue` inicializados; tela limpa
+- [ ] Vertex/index buffers da `Mesh` real
+- [ ] Uniform MVP via bind group
+- [ ] Depth buffer da GPU ligado
+- [ ] `render_system` emitindo draw calls a partir do `World`
+- [ ] Decisão `math` próprio vs `glam` registrada
+
+## Fontes de pesquisa
+
+- [Learn wgpu (sotrh) — o tutorial de referência](https://sotrh.github.io/learn-wgpu/)
+- [wgpu — exemplos oficiais](https://github.com/gfx-rs/wgpu/tree/trunk/examples)
+- [WebGPU Fundamentals (conceitos de WGSL/pipeline)](https://webgpufundamentals.org/)
