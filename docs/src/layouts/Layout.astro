@@ -1,0 +1,106 @@
+---
+import '../styles/global.css';
+import { phases, allStages, statusLabel, type Status } from '../data/roadmap';
+
+// Aceita props diretas (páginas .astro) ou frontmatter (páginas .md/.mdx).
+const props: any = Astro.props.frontmatter ?? Astro.props;
+const {
+  title = 'Colibri',
+  tagline,
+  phase,
+  status,
+  slug,
+} = props;
+
+const pathname = Astro.url.pathname.replace(/\/$/, '') || '/';
+const isActive = (s: string) => pathname === s.replace(/\/$/, '');
+
+// prev/next dentro da sequência linear de etapas
+const idx = allStages.findIndex((s) => isActive(s.slug));
+const prev = idx > 0 ? allStages[idx - 1] : null;
+const next = idx >= 0 && idx < allStages.length - 1 ? allStages[idx + 1] : null;
+
+const st = status as Status | undefined;
+---
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/png" href="/colibri.png" />
+    <title>{title === 'Colibri' ? 'Colibri — Roadmap da engine' : `${title} · Colibri`}</title>
+    <meta name="description" content={tagline ?? 'Roadmap da engine 3D/2D ECS Colibri, escrita em Rust.'} />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/">
+          <span class="brand-mark"><img src="/colibri.png" alt="Colibri" /></span>
+          <span>
+            <span class="brand-name">Colibri</span><br />
+            <span class="brand-sub">engine ECS · Rust</span>
+          </span>
+        </a>
+
+        {phases.map((p) => (
+          <nav class="nav-group">
+            <h3>{p.name}</h3>
+            {p.stages.map((s) => (
+              <a class:list={['nav-link', { active: isActive(s.slug) }]} href={s.slug}>
+                <span class="nav-num">{s.n}</span>
+                <span>{s.title}</span>
+                <span class:list={['dot', s.status]} title={statusLabel[s.status]}></span>
+              </a>
+            ))}
+          </nav>
+        ))}
+      </aside>
+
+      <main class="main">
+        <article class="content">
+          <slot name="header">
+            {phase && <div class="eyebrow">{phase}</div>}
+            {title && title !== 'Colibri' && <h1 class="page-title">{title}</h1>}
+            {tagline && <p class="tagline">{tagline}</p>}
+            {st && <span class:list={['badge', st]}>
+              <span class:list={['dot', st]}></span>{statusLabel[st]}
+            </span>}
+            {(title && title !== 'Colibri') && <hr />}
+          </slot>
+
+          <div class="prose">
+            <slot />
+          </div>
+
+          {(prev || next) && (
+            <div class="pagenav">
+              {prev ? (
+                <a href={prev.slug}>
+                  <div class="dir">← anterior</div>
+                  <div class="ttl">{prev.n} · {prev.title}</div>
+                </a>
+              ) : <span style="flex:1"></span>}
+              {next ? (
+                <a class="next" href={next.slug}>
+                  <div class="dir">próximo →</div>
+                  <div class="ttl">{next.n} · {next.title}</div>
+                </a>
+              ) : <span style="flex:1"></span>}
+            </div>
+          )}
+        </article>
+      </main>
+    </div>
+
+    <script is:inline type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: dark ? 'dark' : 'neutral',
+        fontFamily: 'Inter, system-ui, sans-serif',
+        themeVariables: { fontSize: '14px' },
+      });
+    </script>
+  </body>
+</html>

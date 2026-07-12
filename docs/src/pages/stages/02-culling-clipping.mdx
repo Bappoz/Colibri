@@ -1,0 +1,94 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Back-face culling + clipping de frustum"
+tagline: "Não desenhar o que não se vê e cortar o que sai da tela."
+phase: "Fase A · Rasterizador software"
+status: "planned"
+slug: "/stages/02-culling-clipping"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Dois problemas independentes:
+
+1. **Back-face culling** — descartar triângulos que apontam para longe da câmera
+   (a metade de trás de um objeto opaco). Economia grátis e corrige artefatos.
+2. **Clipping** — cortar triângulos contra o **plano near** (e idealmente contra
+   as bordas do frustum). Sem isso, vértices com `w ≤ 0` (atrás da câmera) causam
+   divisões absurdas e triângulos "explodindo" na tela.
+
+## Por que o near-plane clipping é obrigatório
+
+A divisão perspectiva é `ndc = clip.xyz / clip.w`. Quando um vértice está atrás
+do olho, `w` fica negativo e a projeção **inverte** — o triângulo vira do avesso.
+Você só percebe quando aproxima a câmera de um objeto (etapa 04), então resolva
+antes de dar mobilidade à câmera.
+
+<Mermaid code={`
+flowchart TD
+  Tri["triângulo em clip-space"] --> BF{"normal aponta<br/>para a câmera?"}
+  BF -->|não| cull["descarta (back-face)"]
+  BF -->|sim| CN{"cruza o plano near?"}
+  CN -->|não, atrás| cull2["descarta"]
+  CN -->|não, à frente| pass["mantém 1 triângulo"]
+  CN -->|sim, parcial| clip["recorta →<br/>1 ou 2 triângulos novos"]
+  pass --> raster
+  clip --> raster["rasteriza"]
+`} />
+
+## Back-face culling — o cálculo
+
+Calcule a normal do triângulo (produto vetorial de duas arestas) e compare com o
+vetor **câmera→triângulo**. Se o produto escalar for ≥ 0, a face aponta para
+longe: descarte.
+
+```rust
+// em espaço de mundo/visão, antes da projeção
+let a = v1.position - v0.position;
+let b = v2.position - v0.position;
+let normal = a.cross(b).normalize();
+let to_cam = camera_pos - v0.position;
+if normal.dot(to_cam) < 0.0 { continue; } // vira as costas -> pula
+```
+
+> Repare como isto **depende da convenção de winding** definida na etapa 01. Se o
+> culling comer as faces erradas, inverta o sinal ou a ordem do `cross`.
+
+## Clipping contra o near-plane (Sutherland–Hodgman)
+
+Para cada triângulo, classifique os 3 vértices como "dentro" ou "fora" do plano.
+Interpole novos vértices nas arestas que cruzam o plano. Resultado: **0, 1 ou 2**
+triângulos. Faça isso em espaço de visão (antes de projetar) ou em clip-space
+contra `w`.
+
+Casos: 0 dentro → descarta · 3 dentro → mantém · 1 dentro → 1 triângulo novo ·
+2 dentro → 2 triângulos novos. É o stub vazio em `src/clipper/clipping.rs`.
+
+## Ferramentas do Rust
+
+- `arrayvec::ArrayVec<Vertex, 2>` (ou um `[Option<T>; 2]`) para devolver até 2
+  triângulos **sem alocar** no hot loop.
+- Reuse os métodos de `Vec3d`/`Vec4d` (`cross`, `dot`, `normalize`) de
+  `src/math/utils.rs` — adicione o que faltar.
+
+## Como testar
+
+- **Culling:** desenhe as normais ou pinte frente/trás de cores diferentes; só a
+  frente deve aparecer. FPS sobe (menos triângulos).
+- **Clipping:** coloque a câmera bem perto de uma face (mova o `translation` para
+  `-0.2` no Z). Sem clipping: geometria estoura. Com clipping: corte limpo no
+  near-plane.
+
+## Definition of Done
+
+- [ ] Back-face culling correto (sem faces internas visíveis)
+- [ ] `src/clipper/clipping.rs` recorta triângulos no near-plane
+- [ ] Aproximar a câmera não gera mais geometria "explodindo"
+- [ ] Retorno de 0/1/2 triângulos sem alocação por chamada
+
+## Fontes de pesquisa
+
+- [OLC — clipping (parte 4)](https://www.youtube.com/watch?v=HXSuNxpCzdM) *(re-derive p/ coluna)*
+- [Sutherland–Hodgman polygon clipping](https://en.wikipedia.org/wiki/Sutherland%E2%80%93Hodgman_algorithm)
+- [Fabian Giesen — "Clipping" (série a trip through the graphics pipeline)](https://fgiesen.wordpress.com/2011/07/05/a-trip-through-the-graphics-pipeline-2011-part-5/)

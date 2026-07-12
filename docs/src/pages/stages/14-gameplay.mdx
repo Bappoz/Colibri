@@ -1,0 +1,86 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Input actions, áudio, física e animação"
+tagline: "Mapeamento de ações, som, colisão/rapier e keyframes."
+phase: "Fase G · Sistemas de jogo"
+status: "planned"
+slug: "/stages/14-gameplay"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+O que separa um renderizador de uma **engine de jogo**: os sistemas de suporte.
+Esta etapa é ampla — cada bloco pode virar sua própria sub-etapa. Todos plugam no
+ECS como componentes + sistemas.
+
+<Mermaid code={`
+flowchart TD
+  IN["Input actions"] --> LOGIC["sistemas de gameplay"]
+  LOGIC --> PHYS["Física"]
+  PHYS --> XF["atualiza Transform"]
+  LOGIC --> ANIM["Animação"]
+  ANIM --> XF
+  LOGIC --> AUD["Áudio"]
+  XF --> REND["render (3D/2D)"]
+`} />
+
+## 1. Input actions (abstração)
+
+Pare de checar `KeyCode::W` espalhado pelo código. Mapeie **ações** (`Jump`,
+`MoveForward`) para teclas/botões/eixos, e o gameplay consulta a ação. Facilita
+rebind e suporte a gamepad.
+
+```rust
+enum Action { MoveForward, Jump, Fire }
+struct InputMap { bindings: HashMap<Action, Vec<Binding>> }
+// gameplay: if input.pressed(Action::Jump) { ... }
+```
+
+## 2. Áudio
+
+Um sistema que toca sons em resposta a eventos (colisão, tiro) e música de fundo.
+Componentes `AudioSource` / `AudioListener` (posicional 3D opcional).
+
+## 3. Física
+
+Colisão + resposta. Comece **simples** (AABB, esfera) para entender, depois plugue
+uma engine madura. Sincronize nos dois sentidos: física escreve `Transform`; spawns
+do ECS criam corpos rígidos.
+
+## 4. Animação
+
+Interpolar propriedades ao longo do tempo: por **keyframes** (curvas) e, para
+personagens, **skeletal animation** (skinning) — que o glTF (etapa 10) já traz.
+
+## Ferramentas do Rust
+
+| Domínio | Crate |
+|---|---|
+| Física | [`rapier3d`](https://docs.rs/rapier3d) / [`rapier2d`](https://docs.rs/rapier2d) — padrão em Rust |
+| Física (alternativa leve) | [`parry`](https://docs.rs/parry3d) só para colisão/queries |
+| Áudio | [`kira`](https://docs.rs/kira) (bom p/ jogos) ou [`rodio`](https://docs.rs/rodio) |
+| Input/gamepad | [`gilrs`](https://docs.rs/gilrs) |
+| Animação | keyframes próprios + skinning do `gltf`; ver [`bevy_animation`](https://github.com/bevyengine/bevy) como referência |
+
+## Como testar
+
+- **Input:** rebind de `Jump` de espaço para outra tecla sem tocar no gameplay.
+- **Física:** solte caixas numa rampa — elas escorregam/empilham de forma plausível.
+- **Áudio:** um som dispara exatamente no instante de uma colisão detectada.
+- **Animação:** um cubo pulsa por keyframes; um modelo glTF com esqueleto anda.
+
+## Definition of Done
+
+- [ ] `InputMap` de ações com rebind
+- [ ] Áudio disparado por eventos + música
+- [ ] Física integrada (rapier) sincronizada com `Transform`
+- [ ] Animação por keyframes; skinning glTF (bônus)
+- [ ] Uma cena "jogável" mínima juntando os quatro
+
+## Fontes de pesquisa
+
+- [`rapier` — user guide (Rust)](https://rapier.rs/docs/)
+- [`kira` — áudio para jogos](https://docs.rs/kira)
+- [Bevy — como integra rapier via `bevy_rapier`](https://github.com/dimforge/bevy_rapier) *(padrão ECS↔física)*
+- [GDC / gameprogrammingpatterns — game loop & fixed timestep](https://gameprogrammingpatterns.com/game-loop.html)

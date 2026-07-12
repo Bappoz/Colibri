@@ -1,0 +1,87 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Transform hierárquico + scene graph"
+tagline: "Pai/filho, transform local vs. global, propagação."
+phase: "Fase D · Cena & Assets"
+status: "planned"
+slug: "/stages/09-scene-graph"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Permitir que entidades tenham **pais**: mover o corpo move os braços; girar o
+planeta leva a lua junto. No ECS isso é uma relação `Parent`/`Children` + um
+sistema que propaga o transform local para um transform global.
+
+## Local vs. global
+
+<Mermaid code={`
+flowchart TD
+  root["Sol (global = local)"] --> planeta["Planeta<br/>local: orbita o Sol"]
+  planeta --> lua["Lua<br/>local: orbita o Planeta"]
+  planeta --> nave["Nave"]
+  root -. "propaga" .-> g1["global = pai.global × local"]
+`} />
+
+- **`LocalTransform`** — posição/rotação/escala **relativa ao pai**.
+- **`GlobalTransform`** — a matriz final no mundo, **derivada** (não editada à mão).
+- Um sistema percorre a hierarquia da raiz às folhas: `global = parent.global * local`.
+
+## Componentes de relação
+
+```rust
+struct Parent(Entity);
+struct Children(Vec<Entity>);       // opcional, acelera a travessia top-down
+struct LocalTransform(Mat4x4);
+struct GlobalTransform(Mat4x4);
+```
+
+O `render_system` da etapa 08 passa a ler **`GlobalTransform`** em vez de
+`Transform`.
+
+## O sistema de propagação
+
+Ordem importa: um filho só pode ser calculado **depois** do pai. Duas estratégias:
+
+1. **Top-down a partir das raízes** (entidades sem `Parent`), recursão/pilha
+   descendo por `Children`. Cada nó visitado uma vez.
+2. Ordenar topologicamente as entidades por profundidade e iterar em ordem.
+
+> Cuidado com **ciclos** (A é pai de B que é pai de A) — detecte e rejeite ao
+> setar `Parent`, ou o sistema entra em loop infinito.
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| `Entity` como "ponteiro" seguro | Relações sem `Rc<RefCell>` |
+| Pilha explícita (`Vec`) na travessia | Evita estouro de pilha por recursão profunda |
+| `Mat4x4` `Copy` (etapa 04) | Multiplicar cadeias de transform sem clonar caro |
+
+## Como testar
+
+```bash
+cargo run
+```
+
+Monte um **mini sistema solar**: sol no centro, um planeta como filho girando ao
+redor, e uma lua como filho do planeta.
+
+- Gire só o planeta → a lua acompanha.
+- Mova o sol → tudo se move junto, mantendo as órbitas relativas.
+- Teste unitário: `global` de um neto = produto das 3 matrizes locais.
+
+## Definition of Done
+
+- [ ] `Parent` + `LocalTransform`/`GlobalTransform`
+- [ ] Sistema de propagação raiz→folha, cada nó uma vez
+- [ ] Detecção/prevenção de ciclos
+- [ ] `render_system` usando `GlobalTransform`
+- [ ] Cena hierárquica (sol/planeta/lua) correta na tela e em teste
+
+## Fontes de pesquisa
+
+- [Bevy — "Hierarchical (parent/child) transforms"](https://bevy-cheatbook.github.io/fundamentals/hierarchy.html)
+- [Game Programming Patterns — não canônico mas útil p/ scene graph](https://gameprogrammingpatterns.com/)
+- [Nomes e cuidados: "transform propagation" no design do Bevy (RFCs)](https://github.com/bevyengine/bevy/discussions)

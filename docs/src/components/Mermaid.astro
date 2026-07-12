@@ -1,0 +1,6 @@
+---
+// Renderiza um diagrama Mermaid. O <pre class="mermaid"> é convertido
+// no cliente pelo script em Layout.astro (mermaid.run).
+const { code } = Astro.props;
+---
+<pre class="mermaid">{code.trim()}</pre>

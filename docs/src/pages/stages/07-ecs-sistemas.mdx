@@ -1,0 +1,107 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Sistemas, scheduler e queries"
+tagline: "World, queries tipadas e execução ordenada de sistemas."
+phase: "Fase C · Núcleo ECS"
+status: "planned"
+slug: "/stages/07-ecs-sistemas"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Fechar o núcleo do ECS: uma **query** que itera entidades com um dado conjunto de
+componentes, e um **scheduler** que roda sistemas em ordem a cada frame. É o que
+transforma as colunas da etapa 06 numa API de verdade.
+
+## Query = interseção de colunas
+
+Uma query `(&Transform, &mut Velocity)` deve iterar só as entidades que têm
+**ambos**. A forma direta: itere a coluna menor e teste a presença nas outras.
+
+<Mermaid code={`
+flowchart TD
+  Q["query&lt;(&amp;Transform, &amp;mut Velocity)&gt;"] --> pick["escolhe a menor coluna"]
+  pick --> loop["para cada entidade nela"]
+  loop --> has{"tem Velocity também?"}
+  has -->|não| skip["pula"]
+  has -->|sim| yield["produz (&amp;Transform, &amp;mut Velocity)"]
+`} />
+
+```rust
+// uso pretendido
+fn movement(world: &mut World, dt: f32) {
+    for (transform, vel) in world.query::<(&mut Transform, &Velocity)>() {
+        transform.position += vel.0 * dt;
+    }
+}
+```
+
+Chegar a essa ergonomia em Rust exige um `trait Query` implementado para tuplas —
+comece **feio e explícito** (métodos `query2`, `query3`) e só depois generalize
+com uma macro. Funcionar > elegante.
+
+## Aliasing: a regra de ouro
+
+O maior desafio é provar ao borrow checker que `&mut Velocity` e `&Transform` não
+se sobrepõem. Duas saídas pragmáticas no começo:
+
+1. Buscar por **`Entity`** dentro do loop (`world.get`/`get_mut`) — simples, um
+   pouco mais lento.
+2. Coletar os IDs que casam e depois acessar — evita empréstimos simultâneos.
+
+Otimize (split borrows, ponteiros crus encapsulados em API segura) só quando o
+perfil pedir.
+
+## Scheduler
+
+```rust
+pub struct Schedule { systems: Vec<Box<dyn FnMut(&mut World, f32)>> }
+impl Schedule {
+    pub fn add(&mut self, sys: impl FnMut(&mut World, f32) + 'static) { /* push */ }
+    pub fn run(&mut self, world: &mut World, dt: f32) {
+        for s in &mut self.systems { s(world, dt); }
+    }
+}
+```
+
+Comece **sequencial e ordenado** (a ordem em que você adiciona = ordem de
+execução). Paralelismo (sistemas sem conflito de acesso rodando em `rayon`) é uma
+otimização futura — anote como meta, não faça agora.
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| Traits genéricos sobre tuplas | Base das queries tipadas |
+| `macro_rules!` | Gerar `impl Query` para tuplas de 1..=8 elementos |
+| Closures `FnMut` | Sistemas como valores armazenáveis |
+| [`rayon`](https://docs.rs/rayon) *(futuro)* | Sistemas paralelos |
+
+## Como testar
+
+```rust
+#[test]
+fn movement_system_integrates() {
+    let mut world = World::new();
+    let e = world.spawn((Transform::at(0.0,0.0,0.0), Velocity(Vec3d::new(1.0,0.0,0.0))));
+    let mut sched = Schedule::default();
+    sched.add(movement);
+    sched.run(&mut world, 0.5);
+    assert_eq!(world.get::<Transform>(e).unwrap().position.x(), 0.5);
+}
+```
+
+## Definition of Done
+
+- [ ] `world.query::<(...)>` itera só a interseção correta
+- [ ] `&` e `&mut` misturados em uma query sem violar aliasing
+- [ ] `Schedule` roda sistemas na ordem adicionada
+- [ ] Teste do sistema de movimento passando
+- [ ] Metas de paralelismo anotadas (não implementadas)
+
+## Fontes de pesquisa
+
+- [`hecs` — API de query como referência de ergonomia](https://docs.rs/hecs)
+- [Bevy — "ECS" (queries, systems, schedules)](https://bevy-cheatbook.github.io/programming/ecs-intro.html)
+- [Ryan Fleury / Jonathan Blow — data-oriented design talks](https://www.youtube.com/watch?v=rX0ItVEVjHc)

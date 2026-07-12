@@ -1,0 +1,85 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Editor (egui) + hot-reload"
+tagline: "Inspector de entidades e recarga de assets/sistemas a quente."
+phase: "Fase H · Ferramentas & Inovação"
+status: "planned"
+slug: "/stages/15-ferramentas"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Uma engine sem ferramentas é dolorosa de usar. Aqui você constrói o **loop de
+iteração rápida**: um editor/inspector para ver e editar entidades ao vivo, e
+**hot-reload** de assets (e, se der, de lógica) para não recompilar a cada ajuste.
+
+## Inspector com egui
+
+<Mermaid code={`
+flowchart LR
+  W["World / ECS"] --> INSP["Inspector (egui)"]
+  INSP -->|lê| L["lista de entidades + componentes"]
+  INSP -->|edita| E["altera Transform, Light, Material…"]
+  E --> W
+  INSP --> STATS["FPS, nº de entidades, draw calls"]
+`} />
+
+`egui` é imediato (immediate-mode) e integra com wgpu via `egui-wgpu`. Um painel
+lista entidades; ao selecionar, mostra os componentes com campos editáveis. Mexer
+num valor reflete **na hora** na cena.
+
+```rust
+// esboço do inspector
+egui::Window::new("Entidades").show(ctx, |ui| {
+    for e in world.entities() {
+        if ui.selectable_label(sel == Some(e), format!("{e:?}")).clicked() {
+            sel = Some(e);
+        }
+    }
+});
+```
+
+## Hot-reload de assets
+
+Observe a pasta de assets com `notify`. Quando um `.glb`/textura/shader muda,
+recarregue no `Assets<T>` **mantendo o mesmo handle** — as entidades nem percebem.
+Editar um shader WGSL e ver o resultado sem reiniciar é transformador.
+
+## Hot-reload de código (avançado)
+
+Recompilar só a lib de gameplay como `dylib` e recarregar via [`libloading`]
+permite mudar lógica sem reiniciar o jogo. É delicado (estado, símbolos), então
+trate como **stretch goal** — o hot-reload de assets já entrega 80% do ganho.
+
+## Ferramentas do Rust
+
+| Crate | Uso |
+|---|---|
+| [`egui`](https://docs.rs/egui) + [`egui-wgpu`](https://docs.rs/egui-wgpu) + `egui-winit` | UI de editor imediata |
+| [`notify`](https://docs.rs/notify) | Watcher de arquivos p/ hot-reload |
+| [`libloading`](https://docs.rs/libloading) *(stretch)* | Recarregar `dylib` de gameplay |
+| [`rfd`](https://docs.rs/rfd) | Diálogos nativos de abrir/salvar |
+
+## Como testar
+
+- Abra o inspector, selecione o cubo, arraste o campo de posição → ele se move ao
+  vivo.
+- Edite as cores/roughness de um material no painel → a cena atualiza no frame.
+- Troque uma textura no disco → ela recarrega sem reiniciar.
+- (stretch) Mude uma constante de velocidade no gameplay e recarregue a `dylib`.
+
+## Definition of Done
+
+- [ ] Overlay `egui` integrado ao loop wgpu
+- [ ] Inspector lista entidades e edita componentes ao vivo
+- [ ] HUD de stats (FPS, entidades, draw calls)
+- [ ] Hot-reload de assets via `notify` preservando handles
+- [ ] (bônus) hot-reload de gameplay via `libloading`
+
+## Fontes de pesquisa
+
+- [egui — demo e docs](https://www.egui.rs/)
+- [`egui-wgpu` — integração](https://docs.rs/egui-wgpu)
+- [Bevy — `bevy-inspector-egui` (referência de UX de inspector)](https://github.com/jakobhellermann/bevy-inspector-egui)
+- ["Hot reloading Rust" — artigos de Robert Krahn / Fasterthanlime](https://fasterthanli.me/)

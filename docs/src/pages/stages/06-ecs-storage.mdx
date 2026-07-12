@@ -1,0 +1,113 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Armazenamento de componentes"
+tagline: "Sparse-set: inserir, remover e iterar componentes rápido."
+phase: "Fase C · Núcleo ECS"
+status: "planned"
+slug: "/stages/06-ecs-storage"
+---
+import Mermaid from '../../components/Mermaid.astro';
+
+## Objetivo
+
+Guardar componentes de forma que dê para: (a) anexar/remover a qualquer entidade,
+(b) perguntar "essa entidade tem `Transform`?" em O(1), e (c) **iterar todos os
+`Transform` de forma contígua**. A estrutura recomendada para começar é o
+**sparse-set**.
+
+## Sparse-set em uma imagem
+
+<Mermaid code={`
+flowchart LR
+  subgraph sparse["sparse[entity.index] → posição no dense"]
+    s0["e0 → 0"]
+    s2["e2 → 1"]
+    s5["e5 → 2"]
+  end
+  subgraph dense["dense (contíguo, iterável)"]
+    d0["Transform de e0"]
+    d1["Transform de e2"]
+    d2["Transform de e5"]
+  end
+  s0 --> d0
+  s2 --> d1
+  s5 --> d2
+`} />
+
+- **`dense: Vec<T>`** — os componentes, sem buracos → iteração cache-friendly.
+- **`entities: Vec<Entity>`** — paralelo ao dense, diz de quem é cada slot.
+- **`sparse: Vec<Option<u32>>`** — indexado pela entidade, aponta para o dense.
+
+Remover = **swap-remove**: troca o item removido com o último e corrige o sparse.
+O(1) e mantém o dense compacto.
+
+```rust
+pub struct SparseSet<T> {
+    dense: Vec<T>,
+    entities: Vec<Entity>,
+    sparse: Vec<Option<u32>>,
+}
+impl<T> SparseSet<T> {
+    pub fn insert(&mut self, e: Entity, value: T) { /* ... */ }
+    pub fn remove(&mut self, e: Entity) -> Option<T> { /* swap_remove */ }
+    pub fn get(&self, e: Entity) -> Option<&T> { /* via sparse */ }
+    pub fn iter(&self) -> impl Iterator<Item = (Entity, &T)> { /* zip */ }
+}
+```
+
+## Como cada tipo vira uma coluna
+
+Cada componente `T` tem seu próprio `SparseSet<T>`. O `World` guarda um mapa de
+`TypeId → Box<dyn Any>` para segurar sets heterogêneos:
+
+```rust
+pub struct World {
+    entities: Entities,
+    columns: HashMap<TypeId, Box<dyn ComponentStorage>>,
+}
+```
+
+> **Archetype vs sparse-set:** engines como Bevy usam *archetypes* (agrupam
+> entidades por conjunto de componentes) — iteração ainda mais rápida, mas muito
+> mais complexo. Comece por **sparse-set**: 90% do benefício, uma fração do
+> código. Deixe archetype como otimização futura documentada.
+
+## Ferramentas do Rust
+
+| Recurso | Uso |
+|---|---|
+| `std::any::TypeId` + `Any` | Guardar colunas de tipos diferentes num só mapa |
+| `Vec::swap_remove` | Remoção O(1) mantendo densidade |
+| [`downcast-rs`](https://docs.rs/downcast-rs) *(opcional)* | Facilita o downcast de `dyn ComponentStorage` |
+
+## Como testar
+
+```rust
+#[test]
+fn insert_get_remove() {
+    let mut set = SparseSet::<i32>::default();
+    let e = /* spawn */;
+    set.insert(e, 42);
+    assert_eq!(set.get(e), Some(&42));
+    assert_eq!(set.remove(e), Some(42));
+    assert_eq!(set.get(e), None);
+}
+```
+
+Adicione um teste de **fuzz simples**: insira/remova 10 000 vezes aleatoriamente e
+verifique que `dense.len() == entities.len()` e que todo `get` bate com um
+`HashMap` de referência.
+
+## Definition of Done
+
+- [ ] `SparseSet<T>` com `insert`/`get`/`remove`/`iter`
+- [ ] Remoção por `swap_remove` mantém dense compacto
+- [ ] `World` guarda colunas por `TypeId`
+- [ ] Testes unitários + fuzz contra `HashMap` de referência
+- [ ] Trade-off archetype documentado
+
+## Fontes de pesquisa
+
+- [Sander Mertens — "ECS: sparse sets vs archetypes"](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9)
+- [`hecs` source](https://github.com/Ralith/hecs) — archetype pequeno e legível
+- [Skypjack — "ENTT" e sparse sets](https://skypjack.github.io/2019-02-14-ecs-baf-part-1/) *(C++, mas a estrutura é idêntica)*

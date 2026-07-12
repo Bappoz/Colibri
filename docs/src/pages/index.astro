@@ -1,0 +1,83 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Mermaid from '../components/Mermaid.astro';
+import Icon from '../components/Icon.astro';
+import { phases, statusLabel } from '../data/roadmap';
+
+const overview = `flowchart TD
+  F0["Fase 0<br/>Fundações"] --> A["Fase A<br/>Rasterizador software"]
+  A --> B["Fase B<br/>Interação"]
+  B --> C["Fase C<br/>Núcleo ECS"]
+  C --> D["Fase D<br/>Cena & Assets"]
+  D --> E["Fase E<br/>GPU (wgpu)"]
+  C --> Fp["Fase F<br/>2D"]
+  E --> G["Fase G<br/>Sistemas de jogo"]
+  Fp --> G
+  G --> H["Fase H<br/>Ferramentas & Inovação"]
+  classDef done fill:#e8f6ee,stroke:#2f9e5f,color:#1b2a36;
+  classDef core fill:#e2f2ef,stroke:#148f7c,color:#1b2a36;
+  class F0 done;
+  class C core;`;
+---
+<Layout title="Colibri">
+  <div slot="header" class="hero">
+    <div class="hero-mark"><img src="/colibri.png" alt="Colibri" /></div>
+    <h1>Colibri</h1>
+    <p class="lead">
+      Uma engine de jogos <strong>ECS</strong>, 3D e 2D, escrita em Rust — construída
+      do zero, uma etapa testável por vez.
+    </p>
+    <div class="chips">
+      <span class="chip">rust</span>
+      <span class="chip">ECS data-oriented</span>
+      <span class="chip">software → wgpu</span>
+      <span class="chip">3D + 2D</span>
+    </div>
+  </div>
+
+  <p>
+    Este é o <strong>roadmap vivo</strong> da Colibri. A ideia não é ter tudo pronto,
+    e sim um caminho claro: cada etapa tem um objetivo concreto, um resultado que
+    <strong>você consegue ver ou testar na prática</strong>, as ferramentas certas do
+    ecossistema Rust e fontes de pesquisa. Comece pela Fase 0 para entender o ponto de
+    partida e siga a numeração.
+  </p>
+
+  <Mermaid code={overview} />
+
+  <div class="callout">
+    <Icon name="info" />
+    <div class="callout-body">
+      <strong>Como ler:</strong> as fases A→B fecham um renderizador de software completo
+      (bom para <em>entender</em> cada pixel). A Fase C é a virada de chave: reescrever tudo
+      como ECS. Só depois disso vamos para a GPU e para os sistemas de jogo. A Fase H é onde
+      a Colibri tenta fazer algo diferente das engines existentes.
+    </div>
+  </div>
+
+  {phases.map((p) => (
+    <section class="phase-block">
+      <div class="phase-head">
+        <span class="tag">{p.id}</span>
+        <h2>{p.name.replace(/^Fase \w+ · /, '')}</h2>
+      </div>
+      <p class="phase-goal">{p.goal}</p>
+      <div class="stage-grid">
+        {p.stages.map((s) => (
+          <a class="stage-card" href={s.slug}>
+            <span class="num">{s.n}</span>
+            <span class="body">
+              <span class="st">
+                {s.title}
+                <span class:list={['badge', s.status]} style="font-size:10.5px;padding:1px 7px;">
+                  {statusLabel[s.status]}
+                </span>
+              </span>
+              <span class="sd">{s.tagline}</span>
+            </span>
+          </a>
+        ))}
+      </div>
+    </section>
+  ))}
+</Layout>

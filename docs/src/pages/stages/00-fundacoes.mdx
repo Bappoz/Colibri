@@ -1,0 +1,102 @@
+---
+layout: ../../layouts/Layout.astro
+title: "Fundações: janela, framebuffer e math"
+tagline: "O ponto de partida — o cubo wireframe já gira na tela."
+phase: "Fase 0 · Fundações"
+status: "done"
+slug: "/stages/00-fundacoes"
+---
+import Mermaid from '../../components/Mermaid.astro';
+import Icon from '../../components/Icon.astro';
+
+## Objetivo
+
+Ter um esqueleto que **abre uma janela, roda um loop de frame e desenha algo em
+software** — sem GPU, sem engine gráfica pronta. Esta fase já está concluída: a
+Colibri hoje carrega `assets/cube.obj`, projeta os vértices e desenha o cubo em
+arame (wireframe) girando.
+
+Ela existe para você entender, com as próprias mãos, o que uma GPU normalmente
+esconde: transformar vértices, projetar em perspectiva e mapear para pixels.
+
+## O que já roda hoje
+
+<Mermaid code={`
+flowchart LR
+  W["winit<br/>event loop"] --> App
+  App["App<br/>(ApplicationHandler)"] -->|resumed| E1["Engine::new"]
+  App -->|about_to_wait| U["Engine::update<br/>(dt, theta)"]
+  App -->|RedrawRequested| R["Engine::render"]
+  R --> SB["softbuffer<br/>framebuffer u32"]
+  SB --> Win["janela"]
+`} />
+
+O `main.rs` conecta o `winit` a um `ApplicationHandler` (`App`) que só roteia
+eventos. Toda a lógica 3D vive em `Engine` (`src/engine/core.rs`): ela é dona da
+janela, do framebuffer (`softbuffer`) e do loop de frame.
+
+## Anatomia do frame atual
+
+```rust
+// src/engine/core.rs (resumo)
+pub fn render(&mut self) {
+    let mut buffer = self.surface.buffer_mut().unwrap();
+    buffer.fill(0x000000); // clear
+
+    let world = Mat4x4::translation(Vec3d::new(0.0, 0.0, -3.0))
+        * Mat4x4::rotation_y(self.theta);
+
+    for tri in self.mesh.indices.chunks_exact(3) {
+        // 1. modelo -> mundo -> clip
+        // 2. divisão perspectiva (clip / w)  -> NDC
+        // 3. NDC -> coordenada de tela
+        // 4. draw_line (Bresenham) entre os 3 vértices
+    }
+    buffer.present().unwrap();
+}
+```
+
+## <Icon name="alert" /> Convenção de matriz (leia antes de portar qualquer fórmula)
+
+`Mat4x4` guarda **linhas** como `Vec4d` e faz `M * v` tratando `v` como **vetor
+coluna** (convenção OpenGL: os vetores de base são as *colunas* da matriz). O
+material clássico do OneLoneCoder usa `v * M` com `v` como **vetor linha**.
+
+> Qualquer fórmula copiada de tutorial OLC (`Matrix_PointAt`,
+> `Matrix_QuickInverse`, sinais no mapeamento de tela, `aspect = altura/largura`)
+> **precisa ser re-derivada** para a convenção de coluna. Transliterar linha a
+> linha gera uma matriz transposta silenciosamente errada.
+
+Além disso, `Mat4x4` ainda **não** deriva `Clone, Copy` — vai precisar quando a
+mesma matriz for reusada por vértice no loop.
+
+## Ferramentas do Rust
+
+| Crate | Papel |
+|---|---|
+| [`winit`](https://docs.rs/winit) | Janela e event loop multiplataforma |
+| [`softbuffer`](https://docs.rs/softbuffer) | Framebuffer de CPU (`u32` = `0x00RRGGBB`) apresentado na janela |
+| [`tobj`](https://docs.rs/tobj) | Loader de arquivos `.obj` (vértices + índices) |
+
+## Como testar
+
+```bash
+cargo run
+```
+
+Você deve ver um cubo em arame girando no centro de uma janela fullscreen.
+`Esc`/fechar encerra.
+
+## Definition of Done
+
+- [x] Janela abre e fecha limpo
+- [x] Loop de frame com `dt` real (`Instant`)
+- [x] `.obj` carrega em `Mesh { vertices, indices }`
+- [x] Projeção em perspectiva + mapeamento de tela
+- [x] Wireframe visível e girando
+
+## Fontes de pesquisa
+
+- [OLC — 3D Graphics Engine (parte 1–4)](https://www.youtube.com/watch?v=ih20l3pJoeU) — a base conceitual (lembre da convenção de matriz!)
+- [Scratchapixel — Rasterization: a Practical Implementation](https://www.scratchapixel.com/lessons/3d-basic-rendering/rasterization-practical-implementation/overview-rasterization-algorithm.html)
+- [winit — exemplo `window`](https://github.com/rust-windowing/winit/tree/master/examples)

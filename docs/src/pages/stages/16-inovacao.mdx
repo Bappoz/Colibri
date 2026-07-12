@@ -1,0 +1,137 @@
+---
+layout: ../../layouts/Layout.astro
+title: "A inovação da Colibri"
+tagline: "Live-link com Blender, determinismo, rollback e mais."
+phase: "Fase H · Ferramentas & Inovação"
+status: "planned"
+slug: "/stages/16-inovacao"
+---
+import Mermaid from '../../components/Mermaid.astro';
+import Icon from '../../components/Icon.astro';
+
+## Objetivo
+
+Até aqui você reconstruiu uma engine competente. Esta etapa é sobre **por que a
+Colibri existe** — o que ela faz que Bevy, Godot ou Unity não fazem (ou fazem mal).
+Não faça tudo: **escolha 1–2 apostas** e vá fundo. Abaixo, direções onde Rust + ECS
+data-oriented dão vantagem real, ordenadas do mais ao menos maduro para um projeto
+solo.
+
+<Mermaid code={`
+mindmap
+  root(("Colibri<br/>inovação"))
+    Blender
+      Live-link bidirecional
+      Colibri como viewport
+    Determinismo
+      Snapshot/restore barato
+      Rollback netcode
+      Time-travel debug
+    Segurança
+      Mods em WASM
+      Parede de sandbox
+    Autoria
+      Shader node-graph → WGSL
+      Cena como dados versionáveis
+`} />
+
+## <Icon name="star" label="aposta em destaque" /> Aposta 1 — Colibri Bridge: live-link com o Blender
+
+**A dor:** o ciclo "edita no Blender → exporta glTF → reinicia a engine → confere"
+é lento e mata a criatividade.
+
+**A ideia:** um **add-on Python no Blender** que fala com a Colibri por um socket
+local. Você mexe num objeto no Blender e ele **se move na Colibri no mesmo
+instante** — a engine vira um *viewport PBR alternativo* do Blender. Mais adiante,
+bidirecional: ajustar no inspector (etapa 15) escreve de volta no Blender.
+
+<Mermaid code={`
+sequenceDiagram
+  participant B as Blender (add-on Python)
+  participant S as Socket local (JSON/MessagePack)
+  participant C as Colibri (sistema de sync)
+  B->>S: objeto movido → {id, transform}
+  S->>C: patch
+  C->>C: atualiza GlobalTransform da entidade
+  Note over C: re-renderiza no próximo frame (PBR, etapa 12)
+  C-->>S: (bidirecional) edição no inspector
+  S-->>B: aplica no objeto do Blender
+`} />
+
+**Por que é viável:** o glTF (etapa 10) já dá o mapeamento nó↔entidade; só falta o
+canal ao vivo. Rust tem sockets/IPC excelentes e o ECS torna "aplicar um patch de
+transform" trivial. **Primeiro experimento:** add-on que envia a posição do objeto
+selecionado a cada mudança; a Colibri move a entidade correspondente. É um fim de
+semana de trabalho com efeito "uau".
+
+## Aposta 2 — Determinismo como recurso de primeira classe
+
+ECS data-oriented significa que **o estado do mundo é só dados contíguos** —
+serializável e restaurável barato. Isso desbloqueia três coisas que engines
+tradicionais tratam como difíceis:
+
+- **Snapshot/restore de World** em milissegundos (clonar colunas, não um grafo de
+  objetos).
+- **Rollback netcode** (estilo GGPO): simule à frente, corrija ao receber input
+  remoto. É o santo graal de jogos de luta/competitivos e quase ninguém entrega
+  bem. Exige *simulação determinística* (cuidado com ordem de iteração e `f32` —
+  considere ponto fixo ou `f32` disciplinado).
+- **Time-travel debugging:** grave os snapshots e **rebobine** a partida no
+  inspector. Depurar "como cheguei nesse estado?" andando para trás no tempo.
+
+> **Aposta de posicionamento:** "a engine Rust em que rollback e replay são
+> *default*, não um hack". Poucos motores solo miram nisso.
+
+## Aposta 3 — Paralelismo sem data races provado pelo compilador
+
+O scheduler (etapa 07) pode inspecionar **quais componentes cada sistema lê/escreve**
+e rodar em paralelo, com `rayon`, todos os sistemas cujos acessos **não colidem** —
+e o **borrow checker do Rust garante** ausência de data race em tempo de
+compilação. Bevy faz isso; fazê-lo com uma API mínima e didática é um diferencial e
+uma aula de Rust.
+
+## Aposta 4 — Modding seguro via WebAssembly
+
+Rode lógica de gameplay/mods de usuários como **módulos WASM** ([`wasmtime`]) num
+sandbox: um mod não pode travar nem corromper a engine. Combina com o hot-reload
+(etapa 15) e abre a porta para uma comunidade de mods sem risco de segurança —
+território que engines nativas evitam.
+
+## Aposta 5 — Autoria orientada a dados
+
+- **Shader node-graph → WGSL:** editor visual de materiais (no egui) que compila
+  para WGSL. Democratiza os materiais PBR da etapa 12.
+- **Cena como dados versionáveis:** serialize o World em texto (RON/TOML) diffável
+  no Git — pull requests de níveis de jogo, merge de cenas. O ECS torna isso natural.
+
+## Ferramentas do Rust
+
+| Aposta | Crates |
+|---|---|
+| Bridge Blender | [`serde`](https://docs.rs/serde) + [`rmp-serde`](https://docs.rs/rmp-serde) (MessagePack), sockets `std::net`/[`tokio`](https://docs.rs/tokio); add-on em Python (`bpy`) |
+| Determinismo/rollback | [`serde`], snapshot próprio, [`fixed`](https://docs.rs/fixed) p/ ponto fixo |
+| Paralelismo | [`rayon`](https://docs.rs/rayon), análise de acesso no scheduler |
+| Modding WASM | [`wasmtime`](https://docs.rs/wasmtime) ou [`wasmer`](https://docs.rs/wasmer) |
+| Autoria | [`egui`], [`ron`](https://docs.rs/ron) p/ cenas |
+
+## Como testar (prova de conceito por aposta)
+
+- **Bridge:** girar um cubo no Blender gira na Colibri em < 100 ms.
+- **Determinismo:** rodar a mesma sequência de inputs 2× produz World **byte-idêntico**; `snapshot → avança → restore` volta ao estado exato.
+- **Paralelismo:** dois sistemas sem conflito rodam em threads distintas (prove com contadores/tracing) e o programa **nem compila** se você criar um conflito de acesso.
+- **WASM:** um mod que entra em loop infinito é interrompido sem derrubar a engine.
+
+## Definition of Done
+
+- [ ] Uma (ou duas) apostas escolhida(s) e justificada(s) no README
+- [ ] Prova de conceito da(s) aposta(s) rodando
+- [ ] Trade-offs e limites documentados (o que **não** vai funcionar ainda)
+- [ ] Uma demo curta que mostra o diferencial em 30 segundos
+
+## Fontes de pesquisa
+
+- [GDC — "Fight the Lag!" (rollback / GGPO)](https://www.youtube.com/watch?v=7jb0FOcImdg) e [ggrs (rollback em Rust)](https://github.com/gschup/ggrs)
+- [Bevy — sistema de scheduling paralelo](https://bevyengine.org/news/bevys-first-birthday/)
+- [`wasmtime` — embedding guide](https://docs.wasmtime.dev/)
+- [Blender Python API (`bpy`) — add-ons](https://docs.blender.org/api/current/)
+- [Our Machinery blog (arquivado) — data-driven engine design](https://ruby0x1.github.io/machinery_blog_archive/)
