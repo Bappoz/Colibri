@@ -22,13 +22,43 @@ pub struct Engine {
     mesh: Mesh,
     theta: f64,
     proj: Mat4x4,
+    depth: Vec<f32>,
+    frame_count: u64,
+    per_triangle_shading: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct Vertex2D {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+/// Constante para colorir tonalidade de preto e branco os triangulos (Temp)
+const FACE_COLORS: [u32; 6] = [
+    0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFF00, 0x00FF00FF, 0x0000FFFF,
+];
+
 impl Engine {
-    pub fn new(window: Window) -> Self {
+    pub fn new(window: Window, per_triangle_shading: bool) -> Self {
         let window = Rc::new(window);
         let context = Context::new(window.clone()).expect("failed to create softbuffer context");
         let surface = Surface::new(&context, window.clone()).expect("failed to create surface");
+
+        let mesh = Mesh::load_from_obj("assets/cube.obj");
+        println!(
+            "[engine] mesh carregada: {} vertices, {} triangulos",
+            mesh.vertices.len(),
+            mesh.indices.len() / 3
+        );
+        println!(
+            "[engine] modo de shading: {}",
+            if per_triangle_shading {
+                "por triangulo"
+            } else {
+                "por face (completo)"
+            }
+        );
 
         let mut engine = Self {
             window,
@@ -36,9 +66,12 @@ impl Engine {
             last_frame: Instant::now(),
             width: 0,
             height: 0,
-            mesh: Mesh::load_from_obj("assets/cube.obj"),
+            mesh,
             theta: 0.0,
             proj: Mat4x4::identity(),
+            depth: Vec::new(),
+            frame_count: 0,
+            per_triangle_shading,
         };
 
         // Sem isso a surface fica com tamanho 0 e o primeiro frame nunca aparece.
@@ -64,8 +97,19 @@ impl Engine {
 
         self.width = size.width;
         self.height = size.height;
+
+        self.depth = vec![f32::INFINITY; (self.width * self.height) as usize];
+
         let aspect = size.width as f64 / size.height as f64;
-        self.proj = Mat4x4::perpective(90.0_f64.to_radians(), aspect, 0.1, 1000.0)
+        self.proj = Mat4x4::perpective(90.0_f64.to_radians(), aspect, 0.1, 1000.0);
+
+        println!(
+            "[engine] resize -> {}x{} (depth buffer: {} px, aspect: {:.3})",
+            self.width,
+            self.height,
+            self.depth.len(),
+            aspect
+        );
     }
 
     /// Uma vez por frame, antes do render.
@@ -74,6 +118,22 @@ impl Engine {
         let dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
         self.theta += dt.as_secs_f64();
+
+        self.frame_count += 1;
+        if self.frame_count % 120 == 0 {
+            let fps = if dt.as_secs_f64() > 0.0 {
+                1.0 / dt.as_secs_f64()
+            } else {
+                0.0
+            };
+            println!(
+                "[engine] frame {} | dt: {:.2}ms | fps: {:.1} | theta: {:.2}rad",
+                self.frame_count,
+                dt.as_secs_f64() * 1000.0,
+                fps,
+                self.theta
+            );
+        }
     }
 
     /// Uma vez por frame, depois do update. `buffer` é o framebuffer bruto
@@ -83,11 +143,16 @@ impl Engine {
     pub fn render(&mut self) {
         let mut buffer = self.surface.buffer_mut().expect("failed to get buffer");
         buffer.fill(0x000000); // clear de tela — troque pelo desenho da cena
+        self.depth.fill(f32::INFINITY); // Reset por frame o depth
 
         let world =
             Mat4x4::translation(Vec3d::new(0.0, 0.0, -3.0)) * Mat4x4::rotation_y(self.theta);
-        for tri in self.mesh.indices.chunks_exact(3) {
-            let screen_pts: Vec<(i64, i64)> = tri
+
+        let mut drawn = 0u32;
+        let mut culled = 0u32;
+
+        for (face_idx, tri) in self.mesh.indices.chunks_exact(3).enumerate() {
+            let screen_pts: Vec<Vertex2D> = tri
                 .iter()
                 .map(|&idx| {
                     let p = self.mesh.vertices[idx as usize].position;
@@ -96,32 +161,42 @@ impl Engine {
 
                     let ndc_x = clip.x() / clip.w();
                     let ndc_y = clip.y() / clip.w();
-                    let x = (ndc_x + 1.0) * 0.5 * self.width as f64;
-                    let y = (1.0 - ndc_y) * 0.5 * self.height as f64;
-                    (x as i64, y as i64)
+                    let ndc_z = clip.z() / clip.w();
+
+                    Vertex2D {
+                        x: (ndc_x + 1.0) * 0.5 * self.width as f64,
+                        y: (1.0 - ndc_y) * 0.5 * self.height as f64,
+                        z: ndc_z,
+                    }
                 })
                 .collect();
-            draw_line(
+
+            // Por padrao colore por face (par de triangulos); com a flag, cada triangulo tem sua propria cor.
+            let color_idx = if self.per_triangle_shading {
+                face_idx
+            } else {
+                face_idx / 2
+            };
+            let shade = FACE_COLORS[color_idx % FACE_COLORS.len()];
+
+            let was_drawn = raster_triangle(
                 &mut buffer,
                 self.width,
                 self.height,
-                screen_pts[0],
-                screen_pts[1],
+                &mut self.depth,
+                [screen_pts[0], screen_pts[1], screen_pts[2]],
+                shade,
             );
-            draw_line(
-                &mut buffer,
-                self.width,
-                self.height,
-                screen_pts[1],
-                screen_pts[2],
-            );
-            draw_line(
-                &mut buffer,
-                self.width,
-                self.height,
-                screen_pts[2],
-                screen_pts[0],
-            );
+
+            if was_drawn {
+                drawn += 1;
+            } else {
+                culled += 1;
+            }
+        }
+
+        if self.frame_count % 120 == 0 {
+            println!("[render] triangulos desenhados: {drawn} | culled: {culled}");
         }
 
         buffer.present().expect("failed to present buffer");
@@ -133,36 +208,72 @@ impl Engine {
     }
 }
 
-/// Desenha só pra ver a malha na tela. Vira rasterização de
-/// triângulo preenchido no próximo passo.
-fn draw_line(
+fn edge(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
+    (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+}
+
+/// Desenha os triangulos rastreando os mais proximos da tela e os mais distantes.
+/// Retorna `false` quando o triangulo foi culled (fora da tela ou degenerado).
+fn raster_triangle(
     buffer: &mut [u32],
     width: u32,
     height: u32,
-    (mut x0, mut y0): (i64, i64),
-    (x1, y1): (i64, i64),
-) {
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
+    depth: &mut [f32],
+    v: [Vertex2D; 3],
+    shade: u32,
+) -> bool {
+    let min_x = v
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0) as i64;
+    let max_x = v
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil()
+        .min(width as f64 - 1.0) as i64;
+    let min_y = v
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0) as i64;
+    let max_y = v
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil()
+        .min(height as f64 - 1.0) as i64;
+    if min_x > max_x || min_y > max_y {
+        return false; // Bounding box fora da tela
+    }
 
-    loop {
-        if x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
-            buffer[y0 as usize * width as usize + x0 as usize] = 0x00FFFFFF;
-        }
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
+    let area = edge(v[0].x, v[0].y, v[1].x, v[1].y, v[2].x, v[2].y);
+    if area == 0.0 {
+        return false; // Triangulo degenerado
+    }
+
+    for py in min_y..=max_y {
+        for px in min_x..=max_x {
+            let (fx, fy) = (px as f64 + 0.5, py as f64 + 0.5);
+            let w0 = edge(v[1].x, v[1].y, v[2].x, v[2].y, fx, fy) / area;
+            let w1 = edge(v[2].x, v[2].y, v[0].x, v[0].y, fx, fy) / area;
+            let w2 = edge(v[0].x, v[0].y, v[1].x, v[1].y, fx, fy) / area;
+
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
+            }
+
+            let z = (w0 * v[0].z + w1 * v[1].z + w2 * v[2].z) as f32;
+            let i = py as usize * width as usize + px as usize;
+            if z < depth[i] {
+                depth[i] = z;
+                buffer[i] = shade;
+            }
         }
     }
+
+    true
 }

@@ -3,12 +3,21 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-use rustic_3dgraphic_engine::engine::Engine;
+use colibri::engine::Engine;
 
 /// Ponte entre o winit e a Engine. Não tem lógica de 3D — só roteia eventos.
-#[derive(Default)]
 pub struct App {
     engine: Option<Engine>,
+    per_triangle_shading: bool,
+}
+
+impl App {
+    pub fn new(per_triangle_shading: bool) -> Self {
+        Self {
+            engine: None,
+            per_triangle_shading,
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -21,7 +30,7 @@ impl ApplicationHandler for App {
             .create_window(window_attributes)
             .expect("failed to create window");
 
-        self.engine = Some(Engine::new(window));
+        self.engine = Some(Engine::new(window, self.per_triangle_shading));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
