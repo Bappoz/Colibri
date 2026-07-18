@@ -7,6 +7,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use crate::clipper::clipping::clip_triangle_near;
 use crate::math::utils::{Mat4x4, Vec3d, Vec4d};
 use crate::texture::mesh::Mesh;
 
@@ -34,7 +35,6 @@ pub struct Vertex2D {
     z: f64,
 }
 
-/// Constante para colorir tonalidade de preto e branco os triangulos (Temp)
 const FACE_COLORS: [u32; 6] = [
     0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFF00, 0x00FF00FF, 0x0000FFFF,
 ];
@@ -45,7 +45,7 @@ impl Engine {
         let context = Context::new(window.clone()).expect("failed to create softbuffer context");
         let surface = Surface::new(&context, window.clone()).expect("failed to create surface");
 
-        let mesh = Mesh::load_from_obj("assets/cube.obj");
+        let mesh = Mesh::load_from_obj("assets/VideoShip.obj");
         println!(
             "[engine] mesh carregada: {} vertices, {} triangulos",
             mesh.vertices.len(),
@@ -120,7 +120,7 @@ impl Engine {
         self.theta += dt.as_secs_f64();
 
         self.frame_count += 1;
-        if self.frame_count % 120 == 0 {
+        if self.frame_count.is_multiple_of(120) {
             let fps = if dt.as_secs_f64() > 0.0 {
                 1.0 / dt.as_secs_f64()
             } else {
@@ -152,50 +152,88 @@ impl Engine {
         let mut culled = 0u32;
 
         for (face_idx, tri) in self.mesh.indices.chunks_exact(3).enumerate() {
-            let screen_pts: Vec<Vertex2D> = tri
-                .iter()
-                .map(|&idx| {
-                    let p = self.mesh.vertices[idx as usize].position;
-                    let view_space = world * Vec4d::new(p[0] as f64, p[1] as f64, p[2] as f64, 1.0);
-                    let clip = self.proj * view_space;
+            // Transforma os vertices originais para o ClipSpace antes de dividir por W
+            let mut clip_vertices = [Vec4d::new(0.0, 0.0, 0.0, 0.0); 3];
+            for (i, &idx) in tri.iter().enumerate() {
+                let p = self.mesh.vertices[idx as usize].position;
+                let view_space = world * Vec4d::new(p[0] as f64, p[1] as f64, p[2] as f64, 1.0);
+                clip_vertices[i] = self.proj * view_space;
+            }
 
-                    let ndc_x = clip.x() / clip.w();
-                    let ndc_y = clip.y() / clip.w();
-                    let ndc_z = clip.z() / clip.w();
+            // Executa o clipping contra o plano Near
+            let clipped_triangles =
+                clip_triangle_near(clip_vertices[0], clip_vertices[1], clip_vertices[2]);
 
+            // Processa todos os triangulos resultantes do Clipping
+            for tri_vertices in clipped_triangles {
+                let screen_pts: [Vertex2D; 3] = [
                     Vertex2D {
-                        x: (ndc_x + 1.0) * 0.5 * self.width as f64,
-                        y: (1.0 - ndc_y) * 0.5 * self.height as f64,
-                        z: ndc_z,
-                    }
-                })
-                .collect();
+                        x: (tri_vertices[0].x() / tri_vertices[0].w() + 1.0)
+                            * 0.5
+                            * self.width as f64,
+                        y: (1.0 - tri_vertices[0].y() / tri_vertices[0].w())
+                            * 0.5
+                            * self.height as f64,
+                        z: (tri_vertices[0].z() / tri_vertices[0].w()),
+                    },
+                    Vertex2D {
+                        x: (tri_vertices[1].x() / tri_vertices[1].w() + 1.0)
+                            * 0.5
+                            * self.width as f64,
+                        y: (1.0 - tri_vertices[1].y() / tri_vertices[1].w())
+                            * 0.5
+                            * self.height as f64,
+                        z: (tri_vertices[1].z() / tri_vertices[1].w()),
+                    },
+                    Vertex2D {
+                        x: (tri_vertices[2].x() / tri_vertices[2].w() + 1.0)
+                            * 0.5
+                            * self.width as f64,
+                        y: (1.0 - tri_vertices[2].y() / tri_vertices[2].w())
+                            * 0.5
+                            * self.height as f64,
+                        z: (tri_vertices[2].z() / tri_vertices[2].w()),
+                    },
+                ];
 
-            // Por padrao colore por face (par de triangulos); com a flag, cada triangulo tem sua propria cor.
-            let color_idx = if self.per_triangle_shading {
-                face_idx
-            } else {
-                face_idx / 2
-            };
-            let shade = FACE_COLORS[color_idx % FACE_COLORS.len()];
+                let area = edge(
+                    screen_pts[0].x,
+                    screen_pts[0].y,
+                    screen_pts[1].x,
+                    screen_pts[1].y,
+                    screen_pts[2].x,
+                    screen_pts[2].y,
+                );
 
-            let was_drawn = raster_triangle(
-                &mut buffer,
-                self.width,
-                self.height,
-                &mut self.depth,
-                [screen_pts[0], screen_pts[1], screen_pts[2]],
-                shade,
-            );
+                if area >= 0.0 {
+                    culled += 1;
+                    continue;
+                }
 
-            if was_drawn {
-                drawn += 1;
-            } else {
-                culled += 1;
+                // Por padrao colore por face (par de triangulos); com a flag, cada triangulo tem sua propria cor.
+                let color_idx = if self.per_triangle_shading {
+                    face_idx
+                } else {
+                    face_idx / 2
+                };
+                let shade = FACE_COLORS[color_idx % FACE_COLORS.len()];
+
+                if raster_triangle(
+                    &mut buffer,
+                    self.width,
+                    self.height,
+                    &mut self.depth,
+                    [screen_pts[0], screen_pts[1], screen_pts[2]],
+                    shade,
+                ) {
+                    drawn += 1;
+                } else {
+                    culled += 1;
+                }
             }
         }
 
-        if self.frame_count % 120 == 0 {
+        if self.frame_count.is_multiple_of(120) {
             println!("[render] triangulos desenhados: {drawn} | culled: {culled}");
         }
 
