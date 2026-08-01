@@ -4,11 +4,13 @@ use std::time::Instant;
 
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::PhysicalKey;
+use winit::window::CursorGrabMode;
 use winit::window::Window;
 
 use crate::clipper::clipping::{clip_triangle_near, ClipVertex};
-use crate::engine::DirectionalLight;
+use crate::engine::{Camera, DirectionalLight, InputState};
 use crate::math::utils::{Mat4x4, Vec3d, Vec4d};
 use crate::texture::mesh::Mesh;
 use crate::texture::texturing::Texture;
@@ -30,6 +32,8 @@ pub struct Engine {
     per_triangle_shading: bool,
     light: DirectionalLight,
     texture: Texture,
+    camera: Camera,
+    input_state: InputState,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +47,8 @@ pub struct Vertex2D {
     intensity_over_w: f64,
 }
 
+const MOUSE_SENSITIVITY: f64 = 0.0025;
+const MOVE_SPEED: f64 = 3.0;
 const FACE_COLORS: [u32; 6] = [
     0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFF00, 0x00FF00FF, 0x0000FFFF,
 ];
@@ -50,6 +56,11 @@ const FACE_COLORS: [u32; 6] = [
 impl Engine {
     pub fn new(window: Window, per_triangle_shading: bool) -> Self {
         let window = Rc::new(window);
+
+        window.set_cursor_visible(false);
+        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+            let _ = window.set_cursor_grab(CursorGrabMode::Confined); // FallBack para plataformas sem locked
+        }
         let context = Context::new(window.clone()).expect("failed to create softbuffer context");
         let surface = Surface::new(&context, window.clone()).expect("failed to create surface");
 
@@ -86,6 +97,8 @@ impl Engine {
                 direction: Vec3d::new(0.5, -1.0, 0.3).normalize(),
             },
             texture,
+            camera: Camera::new(),
+            input_state: InputState::default(),
         };
 
         // Sem isso a surface fica com tamanho 0 e o primeiro frame nunca aparece.
@@ -96,6 +109,25 @@ impl Engine {
 
     pub fn window(&self) -> &Window {
         &self.window
+    }
+
+    pub fn input(&mut self, event: WindowEvent) {
+        if let WindowEvent::KeyboardInput { event, .. } = event {
+            if let PhysicalKey::Code(code) = event.physical_key {
+                match event.state {
+                    ElementState::Pressed => {
+                        self.input_state.key_down(code);
+                    }
+                    ElementState::Released => {
+                        self.input_state.key_up(code);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn mouse_moved(&mut self, delta: (f64, f64)) {
+        self.input_state.accumulate_mouse(delta.0, delta.1);
     }
 
     /// Redimensionamento da janela: realoca o framebuffer no novo tamanho.
@@ -133,6 +165,11 @@ impl Engine {
         self.last_frame = Instant::now();
         self.theta += dt.as_secs_f64();
 
+        let (mdx, mdy) = self.input_state.take_mouse_delta();
+        self.camera.process_mouse(mdx, mdy, MOUSE_SENSITIVITY);
+        self.camera
+            .process_keyboard(&self.input_state, MOVE_SPEED, dt.as_secs_f64());
+
         self.frame_count += 1;
         if self.frame_count.is_multiple_of(120) {
             let fps = if dt.as_secs_f64() > 0.0 {
@@ -159,6 +196,7 @@ impl Engine {
         buffer.fill(0x000000); // clear de tela — troque pelo desenho da cena
         self.depth.fill(f32::INFINITY); // Reset por frame o depth
 
+        let view = self.camera.view_matrix();
         let world =
             Mat4x4::translation(Vec3d::new(0.0, 0.0, -3.0)) * Mat4x4::rotation_y(self.theta);
 
@@ -190,7 +228,7 @@ impl Engine {
                 let intensity = self.light.intensity_for(world_normal);
 
                 clip_vertices[i] = ClipVertex {
-                    pos: self.proj * world_pos,
+                    pos: self.proj * view * world_pos,
                     uv: [vertex.uv[0] as f64, vertex.uv[1] as f64],
                     intensity,
                 };
@@ -257,11 +295,6 @@ impl Engine {
         }
 
         buffer.present().expect("failed to present buffer");
-    }
-
-    /// Eventos de teclado/mouse (tudo que não é close/resize/redraw).
-    pub fn input(&mut self, event: WindowEvent) {
-        let _ = event;
     }
 }
 

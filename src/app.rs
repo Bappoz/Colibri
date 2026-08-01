@@ -1,6 +1,7 @@
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use colibri::engine::Engine;
@@ -33,7 +34,26 @@ impl ApplicationHandler for App {
         self.engine = Some(Engine::new(window, self.per_triangle_shading));
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        if let DeviceEvent::MouseMotion { delta } = event {
+            engine.mouse_moved(delta);
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(engine) = self.engine.as_mut() else {
             return;
         };
@@ -48,6 +68,15 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => engine.resize(size),
             WindowEvent::RedrawRequested => engine.render(),
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => event_loop.exit(),
             other => engine.input(other),
         }
     }

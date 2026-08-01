@@ -233,12 +233,17 @@ impl Mat4x4 {
         let a = forward * up.dot_product(&forward);
         let up = (up - a).normalize();
 
-        let right = up.cross(&up);
+        let right = forward.cross(&up);
+        // perpective() usa a convenção OpenGL (-Z pra frente): um ponto na
+        // direção "forward" tem que sair com Z negativo em view space, então
+        // guardamos -forward na linha/coluna de Z da base, não forward puro.
+        let back = -forward;
+
         Self {
             m: [
-                Vec4d::new(right.x(), up.x(), forward.x(), pos.x()),
-                Vec4d::new(right.y(), up.y(), forward.y(), pos.y()),
-                Vec4d::new(right.z(), up.z(), forward.z(), pos.z()),
+                Vec4d::new(right.x(), up.x(), back.x(), pos.x()),
+                Vec4d::new(right.y(), up.y(), back.y(), pos.y()),
+                Vec4d::new(right.z(), up.z(), back.z(), pos.z()),
                 Vec4d::new(0.0, 0.0, 0.0, 1.0),
             ],
         }
