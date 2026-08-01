@@ -7,9 +7,11 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use crate::clipper::clipping::clip_triangle_near;
+use crate::clipper::clipping::{clip_triangle_near, ClipVertex};
+use crate::engine::DirectionalLight;
 use crate::math::utils::{Mat4x4, Vec3d, Vec4d};
 use crate::texture::mesh::Mesh;
+use crate::texture::texturing::Texture;
 
 /// Núcleo da engine: dona da janela, do framebuffer e do loop de frame.
 /// Vai crescer para segurar cena, câmera etc. conforme `math`, `clipper`
@@ -26,13 +28,19 @@ pub struct Engine {
     depth: Vec<f32>,
     frame_count: u64,
     per_triangle_shading: bool,
+    light: DirectionalLight,
+    texture: Texture,
 }
 
 #[derive(Clone, Copy)]
 pub struct Vertex2D {
     x: f64,
     y: f64,
-    z: f64,
+    z: f64,     // profundidade NDC — linear na tela, não precisa de correção
+    inv_w: f64, // 1/w_clip — base da correção de perspectiva
+    u_over_w: f64,
+    v_over_w: f64,
+    intensity_over_w: f64,
 }
 
 const FACE_COLORS: [u32; 6] = [
@@ -45,7 +53,8 @@ impl Engine {
         let context = Context::new(window.clone()).expect("failed to create softbuffer context");
         let surface = Surface::new(&context, window.clone()).expect("failed to create surface");
 
-        let mesh = Mesh::load_from_obj("assets/VideoShip.obj");
+        let mesh = Mesh::load_from_obj("assets/cube.obj");
+        let texture = Texture::load("assets/key.png");
         println!(
             "[engine] mesh carregada: {} vertices, {} triangulos",
             mesh.vertices.len(),
@@ -72,6 +81,11 @@ impl Engine {
             depth: Vec::new(),
             frame_count: 0,
             per_triangle_shading,
+            light: DirectionalLight {
+                ambient: 0.5,
+                direction: Vec3d::new(0.5, -1.0, 0.3).normalize(),
+            },
+            texture,
         };
 
         // Sem isso a surface fica com tamanho 0 e o primeiro frame nunca aparece.
@@ -152,49 +166,53 @@ impl Engine {
         let mut culled = 0u32;
 
         for (face_idx, tri) in self.mesh.indices.chunks_exact(3).enumerate() {
-            // Transforma os vertices originais para o ClipSpace antes de dividir por W
-            let mut clip_vertices = [Vec4d::new(0.0, 0.0, 0.0, 0.0); 3];
+            let mut clip_vertices = [ClipVertex {
+                pos: Vec4d::new(0.0, 0.0, 0.0, 0.0),
+                uv: [0.0, 0.0],
+                intensity: 0.0,
+            }; 3];
+
             for (i, &idx) in tri.iter().enumerate() {
-                let p = self.mesh.vertices[idx as usize].position;
-                let view_space = world * Vec4d::new(p[0] as f64, p[1] as f64, p[2] as f64, 1.0);
-                clip_vertices[i] = self.proj * view_space;
+                let vertex = self.mesh.vertices[idx as usize];
+                let model_pos = Vec4d::new(
+                    vertex.position[0] as f64,
+                    vertex.position[1] as f64,
+                    vertex.position[2] as f64,
+                    1.0,
+                );
+                let world_pos = world * model_pos;
+
+                // Normal do vértice (calculada 1x no load da mesh) rotacionada pro world
+                // space -- w=0 cancela a translação da matriz, só rotaciona a direção.
+                let n = vertex.normal;
+                let rotated = world * Vec4d::new(n[0] as f64, n[1] as f64, n[2] as f64, 0.0);
+                let world_normal = Vec3d::new(rotated.x(), rotated.y(), rotated.z());
+                let intensity = self.light.intensity_for(world_normal);
+
+                clip_vertices[i] = ClipVertex {
+                    pos: self.proj * world_pos,
+                    uv: [vertex.uv[0] as f64, vertex.uv[1] as f64],
+                    intensity,
+                };
             }
 
-            // Executa o clipping contra o plano Near
             let clipped_triangles =
                 clip_triangle_near(clip_vertices[0], clip_vertices[1], clip_vertices[2]);
 
-            // Processa todos os triangulos resultantes do Clipping
             for tri_vertices in clipped_triangles {
-                let screen_pts: [Vertex2D; 3] = [
+                let screen_pts: [Vertex2D; 3] = std::array::from_fn(|i| {
+                    let cv = &tri_vertices[i];
+                    let inv_w = 1.0 / cv.pos.w();
                     Vertex2D {
-                        x: (tri_vertices[0].x() / tri_vertices[0].w() + 1.0)
-                            * 0.5
-                            * self.width as f64,
-                        y: (1.0 - tri_vertices[0].y() / tri_vertices[0].w())
-                            * 0.5
-                            * self.height as f64,
-                        z: (tri_vertices[0].z() / tri_vertices[0].w()),
-                    },
-                    Vertex2D {
-                        x: (tri_vertices[1].x() / tri_vertices[1].w() + 1.0)
-                            * 0.5
-                            * self.width as f64,
-                        y: (1.0 - tri_vertices[1].y() / tri_vertices[1].w())
-                            * 0.5
-                            * self.height as f64,
-                        z: (tri_vertices[1].z() / tri_vertices[1].w()),
-                    },
-                    Vertex2D {
-                        x: (tri_vertices[2].x() / tri_vertices[2].w() + 1.0)
-                            * 0.5
-                            * self.width as f64,
-                        y: (1.0 - tri_vertices[2].y() / tri_vertices[2].w())
-                            * 0.5
-                            * self.height as f64,
-                        z: (tri_vertices[2].z() / tri_vertices[2].w()),
-                    },
-                ];
+                        x: (cv.pos.x() * inv_w + 1.0) * 0.5 * self.width as f64,
+                        y: (1.0 - cv.pos.y() * inv_w) * 0.5 * self.height as f64,
+                        z: cv.pos.z() * inv_w,
+                        inv_w,
+                        u_over_w: cv.uv[0] * inv_w,
+                        v_over_w: cv.uv[1] * inv_w,
+                        intensity_over_w: cv.intensity * inv_w,
+                    }
+                });
 
                 let area = edge(
                     screen_pts[0].x,
@@ -210,13 +228,13 @@ impl Engine {
                     continue;
                 }
 
-                // Por padrao colore por face (par de triangulos); com a flag, cada triangulo tem sua propria cor.
-                let color_idx = if self.per_triangle_shading {
-                    face_idx
+                // Sem -t/--triangles: textura "pura" (tint branco). Com a flag,
+                // cada triangulo ganha um tint de debug pra visualizar winding/culling.
+                let tint = if self.per_triangle_shading {
+                    FACE_COLORS[face_idx % FACE_COLORS.len()]
                 } else {
-                    face_idx / 2
+                    0x00FFFFFF
                 };
-                let shade = FACE_COLORS[color_idx % FACE_COLORS.len()];
 
                 if raster_triangle(
                     &mut buffer,
@@ -224,7 +242,8 @@ impl Engine {
                     self.height,
                     &mut self.depth,
                     [screen_pts[0], screen_pts[1], screen_pts[2]],
-                    shade,
+                    &self.texture,
+                    tint,
                 ) {
                     drawn += 1;
                 } else {
@@ -250,6 +269,24 @@ fn edge(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> f64 {
     (bx - ax) * (py - ay) - (by - ay) * (px - ax)
 }
 
+fn scale_color(color: u32, intensity: f64) -> u32 {
+    let i = intensity.clamp(0.0, 1.0);
+    let r = (((color >> 16) & 0xFF) as f64 * i) as u32;
+    let g = (((color >> 8) & 0xFF) as f64 * i) as u32;
+    let b = ((color & 0xFF) as f64 * i) as u32;
+    (r << 16) | (g << 8) | b
+}
+
+/// Multiplica duas cores canal a canal (0..255), normalizado -- usado pra
+/// aplicar o tint de debug (-t) por cima da textura sem apagar ela.
+fn modulate(a: u32, b: u32) -> u32 {
+    let mul = |x: u32, y: u32| (x * y) / 255;
+    let r = mul((a >> 16) & 0xFF, (b >> 16) & 0xFF);
+    let g = mul((a >> 8) & 0xFF, (b >> 8) & 0xFF);
+    let bl = mul(a & 0xFF, b & 0xFF);
+    (r << 16) | (g << 8) | bl
+}
+
 /// Desenha os triangulos rastreando os mais proximos da tela e os mais distantes.
 /// Retorna `false` quando o triangulo foi culled (fora da tela ou degenerado).
 fn raster_triangle(
@@ -258,7 +295,8 @@ fn raster_triangle(
     height: u32,
     depth: &mut [f32],
     v: [Vertex2D; 3],
-    shade: u32,
+    texture: &Texture,
+    tint: u32,
 ) -> bool {
     let min_x = v
         .iter()
@@ -308,7 +346,19 @@ fn raster_triangle(
             let i = py as usize * width as usize + px as usize;
             if z < depth[i] {
                 depth[i] = z;
-                buffer[i] = shade;
+
+                // Correção de perspectiva: interpola 1/w e os atributos "/w"
+                // linearmente na tela, e só então desfaz a divisão.
+                let inv_w = w0 * v[0].inv_w + w1 * v[1].inv_w + w2 * v[2].inv_w;
+                let u = (w0 * v[0].u_over_w + w1 * v[1].u_over_w + w2 * v[2].u_over_w) / inv_w;
+                let tex_v = (w0 * v[0].v_over_w + w1 * v[1].v_over_w + w2 * v[2].v_over_w) / inv_w;
+                let intensity = (w0 * v[0].intensity_over_w
+                    + w1 * v[1].intensity_over_w
+                    + w2 * v[2].intensity_over_w)
+                    / inv_w;
+
+                let sampled = texture.sample(u, tex_v);
+                buffer[i] = scale_color(modulate(sampled, tint), intensity);
             }
         }
     }
