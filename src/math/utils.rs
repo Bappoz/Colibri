@@ -233,7 +233,7 @@ impl Mat4x4 {
         let a = forward * up.dot_product(&forward);
         let up = (up - a).normalize();
 
-        let right = up.cross(&forward);
+        let right = up.cross(&up);
         Self {
             m: [
                 Vec4d::new(right.x(), up.x(), forward.x(), pos.x()),
