@@ -12,6 +12,20 @@ pub struct Texture {
     width: u32,
     /// Height in texels; always >= 1.
     height: u32,
+    /// `width` pre-widened to `f64`. Sampling runs once per shaded pixel, and
+    /// an integer-to-float conversion there is pure waste.
+    width_f: f64,
+    /// `height` pre-widened to `f64`; see `width_f`.
+    height_f: f64,
+    /// `width - 1` when the width is a power of two, otherwise `0`.
+    ///
+    /// Wrapping a texel coordinate is a modulo, and an integer division in the
+    /// hot loop costs tens of cycles. Power-of-two sizes — every procedural
+    /// texture and most authored ones — reduce it to a bitwise AND; the zero
+    /// marks the slow, general path.
+    wrap_mask_x: u32,
+    /// `height - 1` when the height is a power of two, otherwise `0`.
+    wrap_mask_y: u32,
     /// Row-major texels, `width * height` entries, `0x00RRGGBB` each.
     pixels: Vec<u32>,
 }
@@ -45,11 +59,7 @@ impl Texture {
             })
             .collect();
 
-        Ok(Self {
-            width,
-            height,
-            pixels,
-        })
+        Ok(Self::from_pixels(width, height, pixels))
     }
 
     /// Generates a checkerboard without touching the filesystem.
@@ -70,20 +80,44 @@ impl Texture {
                 pixels.push(if light { 0x00FFFFFF } else { 0x00FF0000 });
             }
         }
-        Self {
-            width: size,
-            height: size,
-            pixels,
-        }
+        Self::from_pixels(size, size, pixels)
     }
 
     /// A single-texel white texture, used as the default when a mesh has no
     /// material — sampling it is a no-op tint.
     pub fn white() -> Self {
+        Self::from_pixels(1, 1, vec![0x00FFFFFF])
+    }
+
+    /// Assembles a texture from already-packed texels, deriving the cached
+    /// float dimensions.
+    ///
+    /// # Panics
+    ///
+    /// If `pixels` does not hold exactly `width * height` texels — an
+    /// inconsistency the sampler cannot detect later.
+    fn from_pixels(width: u32, height: u32, pixels: Vec<u32>) -> Self {
+        assert_eq!(
+            pixels.len(),
+            (width * height) as usize,
+            "texture pixel count does not match {width}x{height}"
+        );
         Self {
-            width: 1,
-            height: 1,
-            pixels: vec![0x00FFFFFF],
+            width,
+            height,
+            width_f: width as f64,
+            height_f: height as f64,
+            wrap_mask_x: if width.is_power_of_two() {
+                width - 1
+            } else {
+                0
+            },
+            wrap_mask_y: if height.is_power_of_two() {
+                height - 1
+            } else {
+                0
+            },
+            pixels,
         }
     }
 
@@ -101,15 +135,34 @@ impl Texture {
     /// (`GL_REPEAT`), so tiling a mesh only needs UVs greater than one.
     ///
     /// This is the hottest function in the engine — it runs once per shaded
-    /// pixel — hence the branch-free `rem_euclid` wrap and the pre-packed
-    /// pixel format.
+    /// pixel — hence the pre-packed pixel format and the cached float
+    /// dimensions.
+    ///
+    /// The wrap happens in *texel* space rather than on the `[0, 1]`
+    /// coordinate: scaling first and wrapping the integer afterwards replaces
+    /// a floating-point remainder plus a clamp with one `floor` and one
+    /// bitwise AND. `rem_euclid` on the `f64` cost roughly 3 ms per 1080p
+    /// frame of full-screen geometry.
     #[inline]
     pub fn sample(&self, u: f64, v: f64) -> u32 {
-        let u = u.rem_euclid(1.0);
-        let v = v.rem_euclid(1.0);
-        let x = ((u * self.width as f64) as u32).min(self.width - 1);
-        let y = ((v * self.height as f64) as u32).min(self.height - 1);
+        let x = wrap_texel(u * self.width_f, self.width, self.wrap_mask_x);
+        let y = wrap_texel(v * self.height_f, self.height, self.wrap_mask_y);
         self.pixels[(y * self.width + x) as usize]
+    }
+}
+
+/// Wraps a scaled texel coordinate into `0..size`, `GL_REPEAT` style.
+///
+/// `floor` rather than truncation, so a negative coordinate wraps around the
+/// far edge instead of folding back toward zero. `mask` is the power-of-two
+/// fast path; `0` selects the general modulo.
+#[inline]
+fn wrap_texel(scaled: f64, size: u32, mask: u32) -> u32 {
+    let index = scaled.floor() as i64;
+    if mask != 0 {
+        index as u32 & mask
+    } else {
+        index.rem_euclid(size as i64) as u32
     }
 }
 
@@ -131,6 +184,17 @@ mod tests {
         let tex = Texture::checkerboard(2, 1);
         // 0.999... arredonda para o último texel, não para width.
         let _ = tex.sample(0.999_999_999, 0.999_999_999);
+        // E coordenadas absurdas não podem indexar fora do buffer.
+        let _ = tex.sample(1e18, -1e18);
+        let _ = tex.sample(f64::NAN, f64::INFINITY);
+    }
+
+    /// Textura não potência de dois cai no caminho geral e continua correta.
+    #[test]
+    fn non_power_of_two_still_wraps() {
+        let tex = Texture::checkerboard(6, 2);
+        assert_eq!(tex.sample(0.1, 0.1), tex.sample(1.1, 2.1));
+        assert_eq!(tex.sample(0.1, 0.1), tex.sample(-0.9, -1.9));
     }
 
     /// O xadrez alterna a cada célula, que é o que revela erro de perspectiva.

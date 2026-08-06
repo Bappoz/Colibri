@@ -9,7 +9,14 @@
 //! cargo run --release --example bench                                    # defaults
 //! cargo run --release --example bench -- assets/teapot.obj 200           # model, frames
 //! cargo run --release --example bench -- assets/teapot.obj 200 640 360   # ...and viewport
+//! cargo run --release --example bench -- assets/cube.obj 200 1920 1080 1.1  # ...and zoom
+//! cargo run --release --example bench -- assets/cube.obj 200 1920 1080 1.1 1 # ...and threads
 //! ```
+//!
+//! The last argument is the camera distance as a multiple of the model's
+//! bounding radius: `2.5` frames the whole model, `1.1` puts the camera right
+//! up against it. The low-zoom case is the one worth optimizing — it is what
+//! the engine does when you fly into the geometry.
 //!
 //! Always run it with `--release`: a debug build of a software rasterizer is
 //! roughly an order of magnitude slower and measures nothing useful.
@@ -27,6 +34,10 @@ const DEFAULT_WIDTH: usize = 1920;
 const DEFAULT_HEIGHT: usize = 1080;
 /// Frames rendered when no count is given on the command line.
 const DEFAULT_FRAMES: usize = 120;
+/// Camera distance, as a multiple of the model's bounding radius.
+const DEFAULT_ZOOM: f64 = 2.5;
+/// Raster worker threads; `0` asks the platform for the core count.
+const DEFAULT_THREADS: usize = 0;
 /// Model used when no path is given.
 const DEFAULT_MODEL: &str = "assets/teapot.obj";
 
@@ -36,6 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frames: usize = parse_or(args.next(), DEFAULT_FRAMES)?;
     let width: usize = parse_or(args.next(), DEFAULT_WIDTH)?;
     let height: usize = parse_or(args.next(), DEFAULT_HEIGHT)?;
+    let zoom: f64 = match args.next() {
+        Some(value) => value.parse()?,
+        None => DEFAULT_ZOOM,
+    };
+    let threads: usize = parse_or(args.next(), DEFAULT_THREADS)?;
 
     let mut assets = Assets::new();
     let mesh = assets.load_mesh(&model)?;
@@ -43,8 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The camera is placed from the mesh's own size so that every model fills
     // a comparable slice of the viewport: benchmarking a mesh that covers
-    // three pixels would only measure the vertex stage.
-    let distance = 2.5 * assets.mesh(mesh).bounding_radius();
+    // three pixels would only measure the vertex stage. Lowering `zoom` walks
+    // the camera in until the geometry fills the screen, which is the
+    // fill-rate case — the one that gets slow in the real application.
+    let distance = zoom * assets.mesh(mesh).bounding_radius();
     let mut scene = Scene::new();
     scene.camera = Camera::new(Vec3d::new(0.0, 0.0, distance));
     scene.spawn(
@@ -52,7 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_angular_velocity(Vec3d::new(0.0, 1.0, 0.0)),
     );
 
-    let mut renderer = Renderer::new(RenderOptions::default());
+    let mut renderer = Renderer::new(RenderOptions {
+        threads,
+        ..RenderOptions::default()
+    });
     renderer.resize(width, height);
     let mut pixels = vec![0u32; width * height];
 
@@ -72,6 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let per_frame_ms = elapsed.as_secs_f64() * 1000.0 / frames as f64;
     println!("model            {model}");
     println!("viewport         {width}x{height}");
+    println!("camera distance  {distance:.2} ({zoom:.2}x bounding radius)");
+    println!("raster threads   {}", renderer.threads());
     println!("frames           {frames}");
     println!("frame time       {per_frame_ms:.2} ms");
     println!("throughput       {:.1} fps", 1000.0 / per_frame_ms);

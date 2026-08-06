@@ -26,6 +26,7 @@ por entidades.
 - Luz direcional difusa com termo ambiente
 - Câmera livre (FPS) com input acumulado
 - **Entidades geracionais** + cena com múltiplos objetos
+- **Rasterização paralela** por faixas horizontais (`std::thread::scope`)
 
 **Próximo** — storage de componentes de verdade
 ([etapa 06](docs/src/pages/stages/06-ecs-storage.mdx))
@@ -61,6 +62,7 @@ atalhos (`just run`, `just debug`, `just bench`, `just gate`).
 -t, --triangles        colore cada triângulo (expõe a tesselação)
 -w, --wireframe        desenha as arestas por cima
     --no-cull          desliga o back-face culling
+    --threads <N>      threads de rasterização  [default: uma por core]
 ```
 
 > A textura padrão é o xadrez gerado em código: linhas retas são o que
@@ -93,29 +95,33 @@ ao lado do código que depende delas.
 ## Testes e performance
 
 ```bash
-cargo test                        # 80+ testes unitários, sem janela
+cargo test                        # 86 testes unitários, sem janela
 cargo run --release --example bench
 ```
 
 O benchmark é headless — renderiza num `Vec<u32>` — então dá para comparar
-mudanças no rasterizador sem abrir janela. Ele posiciona a câmera a partir do
-raio do modelo, para que qualquer `.obj` ocupe uma fatia comparável da tela.
+mudanças no rasterizador sem abrir janela. Argumentos:
+`[modelo] [frames] [largura] [altura] [zoom] [threads]`. O `zoom` é a distância
+da câmera em múltiplos do raio do modelo: `2.5` enquadra, `1.1` cola a câmera na
+geometria. **É o caso de zoom baixo que importa** — é o que trava quando você
+voa para dentro da cena.
 
-Baseline medido nesta máquina (build `--release`, 200 frames):
+Medido nesta máquina (i7-1255U, 12 threads, `--release`, 1920x1080, melhor de 3):
 
-| Modelo | Triângulos | Viewport | Frame | FPS | Px sombreados |
-|---|---|---|---|---|---|
-| `teapot.obj` | 6320 | 1920x1080 | 7.9 ms | ~127 | 94k |
-| `teapot.obj` | 6320 | 320x180 | 1.3 ms | ~774 | — |
-| `mountains.obj` | 4860 | 1920x1080 | 7.1 ms | ~141 | 65k |
-| `cube.obj` | 12 | 1920x1080 | 13.6 ms | ~74 | 303k |
+| Caso | Antes | 1 thread | Todas as threads | Ganho |
+|---|---|---|---|---|
+| cubo colado (`1.1x`) | 75,0 ms · 13 fps | 49,1 ms | **9,3 ms · 108 fps** | 8,1x |
+| cubo perto (`1.5x`) | 44,5 ms · 22 fps | 29,9 ms | **5,9 ms · 170 fps** | 7,6x |
+| cubo enquadrado (`2.5x`) | 14,0 ms | 9,5 ms | **2,5 ms** | 5,5x |
+| teapot, 6320 tris | 8,3 ms | 7,0 ms | **3,9 ms** | 2,1x |
+| mountains, 4860 tris | 7,7 ms | 7,4 ms | **5,1 ms** | 1,5x |
 
-O cubo, com 12 triângulos, é o caso mais lento: o custo é dominado por pixel,
-não por vértice. Some a isso o clear dos dois buffers, 16 MB por frame a 1080p
-(`1920·1080·(4+4)` bytes).
+A coluna "1 thread" isola o ganho de algoritmo do ganho de paralelismo. Malha
+densa e pequena na tela (mountains) ganha menos: aí o gargalo é o estágio de
+geometria, que ainda roda numa thread só — é o próximo alvo.
 
-Rode o bench **antes e depois** de mexer em `src/render/` — os números acima
-são o ponto de comparação, não uma meta.
+Rode o bench **antes e depois** de mexer em `src/render/` — os números acima são
+o ponto de comparação, não uma meta.
 
 ## Roadmap (documentação)
 

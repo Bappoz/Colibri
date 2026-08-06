@@ -10,11 +10,18 @@
 //!
 //! # Why it is written this way
 //!
-//! The edge functions are affine in screen space, so they are evaluated once
-//! at the top-left corner of the bounding box and then **stepped**: one add
-//! per edge per pixel, instead of a full evaluation plus three divisions.
-//! Coverage is tested on the raw edge values and the division by the area
-//! happens only for pixels that survive.
+//! Everything interpolated across a triangle — the three edge functions, the
+//! depth, `1/w` and the attributes — is **affine in screen space**. So none of
+//! it is recomputed per pixel: each quantity is evaluated once at the start of
+//! a row and then advanced by a constant, one add per pixel. Coverage is
+//! tested on the raw edge values, and the only division left in the inner loop
+//! is the perspective `1/(1/w)`, paid solely by pixels that pass the depth
+//! test.
+//!
+//! Each row is also narrowed to the interval where the three edges *can* be
+//! satisfied, instead of walking the whole bounding box,
+//! and colors are combined in integer fixed point — the previous version spent
+//! six integer divisions and six float conversions per shaded pixel.
 //!
 //! # Conventions
 //!
@@ -99,22 +106,169 @@ pub fn signed_area(v: &[ScreenVertex; 3]) -> f64 {
     edge(&v[0], &v[1], v[2].x, v[2].y)
 }
 
+/// The tint that leaves a texel untouched; also the marker for the fast path
+/// that skips tinting altogether.
+const WHITE: u32 = 0x00FF_FFFF;
+
+/// Fixed-point scale where `ONE` means "unchanged".
+///
+/// A power of two so that the normalization after a multiply is a shift and
+/// not a division — the reason the shading path works in `0..=256` rather than
+/// the `0..=255` the channels themselves use.
+const FIXED_ONE: u32 = 256;
+
+/// Red and blue: the two channels that sit far enough apart in a `0x00RRGGBB`
+/// word to be multiplied at the same time without their products colliding.
+const LANE_RB: u32 = 0x00FF_00FF;
+
+/// Green, multiplied in the second pass.
+const LANE_G: u32 = 0x0000_FF00;
+
+/// Converts a light intensity in `[0, 1]` to the fixed point the shading path
+/// works in. Values outside the range are clamped; `NaN` maps to zero.
+#[inline]
+fn intensity_to_fixed(intensity: f64) -> u32 {
+    (intensity.clamp(0.0, 1.0) * FIXED_ONE as f64) as u32
+}
+
+/// Multiplies a packed `0x00RRGGBB` color by a `0..=256` fixed-point scalar.
+///
+/// The three channels are done in two multiplies instead of three, by relying
+/// on the gaps in the packed layout: red and blue are 16 bits apart, so
+/// `0x00RR00BB * 256` still leaves each product inside its own 16-bit lane.
+/// Green is handled on its own because it has no such partner.
+///
+/// This replaced three channel extractions, three multiplies and three
+/// divisions by 255 — the divisions alone dominated the previous shading path.
+#[inline]
+fn scale_packed(color: u32, scale: u32) -> u32 {
+    let red_blue = (((color & LANE_RB) * scale) >> 8) & LANE_RB;
+    let green = (((color & LANE_G) * scale) >> 8) & LANE_G;
+    red_blue | green
+}
+
 /// Multiplies two `0x00RRGGBB` colors channel by channel.
 ///
 /// Used to apply a per-object tint on top of the sampled texel without
 /// replacing it: modulating by white is a no-op.
 #[inline]
 pub fn modulate(a: u32, b: u32) -> u32 {
-    let channel = |shift: u32| (((a >> shift) & 0xFF) * ((b >> shift) & 0xFF)) / 255;
-    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+    let channel = |shift: u32| ((((a >> shift) & 0xFF) * ((b >> shift) & 0xFF)) / 255) << shift;
+    channel(16) | channel(8) | channel(0)
 }
 
 /// Scales a `0x00RRGGBB` color by a light intensity in `[0, 1]`.
 #[inline]
 pub fn scale_color(color: u32, intensity: f64) -> u32 {
-    let i = intensity.clamp(0.0, 1.0);
-    let channel = |shift: u32| ((((color >> shift) & 0xFF) as f64 * i) as u32) << shift;
-    channel(16) | channel(8) | channel(0)
+    scale_packed(color, intensity_to_fixed(intensity))
+}
+
+/// Applies a per-triangle tint to a texel, in the same fixed point as the
+/// light intensity so the two can be folded into one multiply chain.
+///
+/// Returned as a `0..=256` triple packed the same way a color is, ready to
+/// feed [`scale_packed`] twice.
+#[inline]
+fn tint_to_fixed(tint: u32) -> [u32; 3] {
+    // `+ (c >> 7)` turns 255 into 256, so a white tint is exactly neutral
+    // instead of losing one part in 256 on every channel.
+    let channel = |shift: u32| {
+        let c = (tint >> shift) & 0xFF;
+        c + (c >> 7)
+    };
+    [channel(16), channel(8), channel(0)]
+}
+
+/// Applies a tint, already in fixed point, to a texel.
+///
+/// Channel by channel, unlike [`scale_packed`]: the two-lane trick needs one
+/// scalar for every lane, and a tint has a different factor per channel.
+#[inline]
+fn modulate_fixed(texel: u32, tint: [u32; 3]) -> u32 {
+    let red = ((((texel >> 16) & 0xFF) * tint[0]) >> 8) & 0xFF;
+    let green = ((((texel >> 8) & 0xFF) * tint[1]) >> 8) & 0xFF;
+    let blue = (((texel & 0xFF) * tint[2]) >> 8) & 0xFF;
+    (red << 16) | (green << 8) | blue
+}
+
+/// One quantity interpolated across the triangle, plus its screen-space
+/// gradients.
+///
+/// Any attribute written as `(e0*a0 + e1*a1 + e2*a2) / area` is affine in
+/// screen space, so its derivatives are constants and it can be advanced by
+/// addition instead of re-evaluated. That is the whole trick: five of these
+/// replace twelve multiplications per pixel with five adds.
+#[derive(Clone, Copy)]
+struct Lerp {
+    /// Value at the left edge of the row currently being rasterized.
+    row: f64,
+    /// Change per one-pixel step in `+x`.
+    dx: f64,
+    /// Change per one-row step in `+y`.
+    dy: f64,
+}
+
+impl Lerp {
+    /// Builds the interpolator for the attribute holding `values` at the three
+    /// vertices, given the edge functions already sampled at the first pixel.
+    fn new(
+        values: [f64; 3],
+        edge_row: &[f64; 3],
+        step_x: &[f64; 3],
+        step_y: &[f64; 3],
+        inv_area: f64,
+    ) -> Self {
+        let combine =
+            |c: &[f64; 3]| (c[0] * values[0] + c[1] * values[1] + c[2] * values[2]) * inv_area;
+        Self {
+            row: combine(edge_row),
+            dx: combine(step_x),
+            dy: combine(step_y),
+        }
+    }
+
+    /// Value `k` pixels into the current row.
+    #[inline]
+    fn at(&self, k: f64) -> f64 {
+        self.row + k * self.dx
+    }
+
+    /// Moves to the next row.
+    #[inline]
+    fn advance_row(&mut self) {
+        self.row += self.dy;
+    }
+}
+
+/// Narrows a row to the pixel interval where the three edge functions can all
+/// be satisfied, as offsets from the left of the bounding box.
+///
+/// Each edge is linear in `x`, so `edge + k * step <= 0` solves directly for a
+/// bound on `k`. Without this the loop steps its eight accumulators across the
+/// empty corners of the bounding box, which for a typical triangle is half of
+/// it.
+///
+/// The interval is widened by one pixel to absorb the rounding of the
+/// divisions: coverage is still decided exactly by the per-pixel test, so this
+/// only ever changes how many pixels are *visited*, never which are drawn.
+fn covered_span(edge_row: &[f64; 3], step_x: &[f64; 3], span_len: usize) -> Option<(usize, usize)> {
+    let last = (span_len - 1) as f64;
+    let mut low = 0.0_f64;
+    let mut high = last;
+
+    for i in 0..3 {
+        if step_x[i] > 0.0 {
+            high = high.min(-edge_row[i] / step_x[i]);
+        } else if step_x[i] < 0.0 {
+            low = low.max(-edge_row[i] / step_x[i]);
+        } else if edge_row[i] > 0.0 {
+            return None; // this edge excludes the entire row
+        }
+    }
+
+    let low = (low.floor() - 1.0).clamp(0.0, last);
+    let high = (high.ceil() + 1.0).clamp(0.0, last);
+    (low <= high).then_some((low as usize, high as usize))
 }
 
 /// Fills a triangle, sampling `texture` and modulating by `tint`, with a depth
@@ -150,7 +304,7 @@ pub fn fill_triangle(
 
     // Edge functions sampled at the center of the top-left pixel of the box...
     let (px0, py0) = (min_x as f64 + 0.5, min_y as f64 + 0.5);
-    let mut row = [
+    let mut edge_row = [
         edge(&v[1], &v[2], px0, py0),
         edge(&v[2], &v[0], px0, py0),
         edge(&v[0], &v[1], px0, py0),
@@ -159,57 +313,88 @@ pub fn fill_triangle(
     let step_x = [-(v[2].y - v[1].y), -(v[0].y - v[2].y), -(v[1].y - v[0].y)];
     let step_y = [v[2].x - v[1].x, v[0].x - v[2].x, v[1].x - v[0].x];
 
+    // Everything the shading needs, turned into a start value and two
+    // constant gradients. Set up once per triangle; advanced by one add per
+    // pixel from here on.
+    let lerp = |values: [f64; 3]| Lerp::new(values, &edge_row, &step_x, &step_y, inv_area);
+    let mut depth_of = lerp([v[0].z, v[1].z, v[2].z]);
+    let mut inv_w = lerp([v[0].inv_w, v[1].inv_w, v[2].inv_w]);
+    let mut u_over_w = lerp([v[0].u_over_w, v[1].u_over_w, v[2].u_over_w]);
+    let mut v_over_w = lerp([v[0].v_over_w, v[1].v_over_w, v[2].v_over_w]);
+    let mut light = lerp([
+        v[0].intensity_over_w,
+        v[1].intensity_over_w,
+        v[2].intensity_over_w,
+    ]);
+
+    // Hoisted out of the pixel loop: the tint is constant across the triangle,
+    // and white — by far the common case — skips the modulation entirely.
+    let tinted = tint != WHITE;
+    let tint_fixed = tint_to_fixed(tint);
     let span_len = max_x - min_x + 1;
     let mut shaded = 0;
 
     for y in min_y..=max_y {
-        let (colors, depths) = target.span_mut(y, min_x, span_len);
-        let mut e = row;
+        if let Some((first, last)) = covered_span(&edge_row, &step_x, span_len) {
+            let k = first as f64;
+            let mut e = [
+                edge_row[0] + k * step_x[0],
+                edge_row[1] + k * step_x[1],
+                edge_row[2] + k * step_x[2],
+            ];
+            let mut z = depth_of.at(k);
+            let mut w_inv = inv_w.at(k);
+            let mut u = u_over_w.at(k);
+            let mut tex_v = v_over_w.at(k);
+            let mut intensity = light.at(k);
 
-        for (color, depth) in colors.iter_mut().zip(depths.iter_mut()) {
-            // Area is negative after normalization, so "inside" is "every edge
-            // function has the same (negative) sign".
-            if e[0] <= 0.0 && e[1] <= 0.0 && e[2] <= 0.0 {
-                let bary = [e[0] * inv_area, e[1] * inv_area, e[2] * inv_area];
-                let z = (bary[0] * v[0].z + bary[1] * v[1].z + bary[2] * v[2].z) as f32;
+            let (colors, depths) = target.span_mut(y, min_x + first, last - first + 1);
 
-                if z < *depth {
-                    *depth = z;
-                    *color = shade(&v, &bary, texture, tint);
-                    shaded += 1;
+            for (color, depth) in colors.iter_mut().zip(depths.iter_mut()) {
+                // Area is negative after normalization, so "inside" is "every
+                // edge function has the same (negative) sign".
+                if e[0] <= 0.0 && e[1] <= 0.0 && e[2] <= 0.0 {
+                    let z32 = z as f32;
+                    if z32 < *depth {
+                        *depth = z32;
+
+                        // Undo the perspective divide: the attributes were
+                        // interpolated as `attribute / w`, so multiplying by
+                        // `w` recovers the value at this pixel.
+                        let w = 1.0 / w_inv;
+                        let texel = texture.sample(u * w, tex_v * w);
+                        let lit = intensity_to_fixed(intensity * w);
+                        *color = if tinted {
+                            scale_packed(modulate_fixed(texel, tint_fixed), lit)
+                        } else {
+                            scale_packed(texel, lit)
+                        };
+                        shaded += 1;
+                    }
                 }
-            }
 
-            e[0] += step_x[0];
-            e[1] += step_x[1];
-            e[2] += step_x[2];
+                e[0] += step_x[0];
+                e[1] += step_x[1];
+                e[2] += step_x[2];
+                z += depth_of.dx;
+                w_inv += inv_w.dx;
+                u += u_over_w.dx;
+                tex_v += v_over_w.dx;
+                intensity += light.dx;
+            }
         }
 
-        row[0] += step_y[0];
-        row[1] += step_y[1];
-        row[2] += step_y[2];
+        edge_row[0] += step_y[0];
+        edge_row[1] += step_y[1];
+        edge_row[2] += step_y[2];
+        depth_of.advance_row();
+        inv_w.advance_row();
+        u_over_w.advance_row();
+        v_over_w.advance_row();
+        light.advance_row();
     }
 
     shaded
-}
-
-/// Interpolates the attributes at one covered pixel and returns its color.
-///
-/// This is where the perspective divide is undone: `1/w` is interpolated
-/// linearly, then every attribute is multiplied by `w = 1 / (1/w)`.
-#[inline]
-fn shade(v: &[ScreenVertex; 3], bary: &[f64; 3], texture: &Texture, tint: u32) -> u32 {
-    let inv_w = bary[0] * v[0].inv_w + bary[1] * v[1].inv_w + bary[2] * v[2].inv_w;
-    let w = 1.0 / inv_w;
-
-    let u = (bary[0] * v[0].u_over_w + bary[1] * v[1].u_over_w + bary[2] * v[2].u_over_w) * w;
-    let tex_v = (bary[0] * v[0].v_over_w + bary[1] * v[1].v_over_w + bary[2] * v[2].v_over_w) * w;
-    let intensity = (bary[0] * v[0].intensity_over_w
-        + bary[1] * v[1].intensity_over_w
-        + bary[2] * v[2].intensity_over_w)
-        * w;
-
-    scale_color(modulate(texture.sample(u, tex_v), tint), intensity)
 }
 
 /// Screen-space bounding box of the triangle, clamped to the viewport.

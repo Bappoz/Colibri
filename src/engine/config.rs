@@ -62,6 +62,12 @@ impl EngineConfig {
                 "-t" | "--triangles" => config.render.debug_triangle_tint = true,
                 "-w" | "--wireframe" => config.render.wireframe = true,
                 "--no-cull" => config.render.backface_culling = false,
+                "--threads" => {
+                    let value = next_value(&mut args, &arg)?;
+                    config.render.threads = value
+                        .parse()
+                        .map_err(|_| format!("'--threads' expects a number, got '{value}'"))?;
+                }
                 "-m" | "--model" => {
                     config.model_path = next_value(&mut args, &arg)?;
                 }
@@ -87,6 +93,7 @@ impl EngineConfig {
             "    -t, --triangles        tint each triangle to expose the tessellation\n",
             "    -w, --wireframe        overlay triangle edges\n",
             "        --no-cull          disable back-face culling\n",
+            "        --threads <N>      raster worker threads [default: one per core]\n",
             "    -h, --help             print this message\n\n",
             "CONTROLS:\n",
             "    W A S D                move  ·  Space / Left Ctrl  up and down\n",
@@ -163,6 +170,24 @@ mod tests {
     #[test]
     fn missing_value_is_an_error() {
         assert!(parse(&["--model"]).is_err());
+        assert!(parse(&["--threads"]).is_err());
+    }
+
+    /// `--threads` aceita número e rejeita lixo com mensagem clara.
+    #[test]
+    fn thread_count_is_parsed() {
+        assert_eq!(
+            parse(&["--threads", "4"]).unwrap().unwrap().render.threads,
+            4
+        );
+        assert_eq!(
+            parse(&[]).unwrap().unwrap().render.threads,
+            0,
+            "0 = automático"
+        );
+
+        let err = parse(&["--threads", "muitas"]).unwrap_err();
+        assert!(err.contains("muitas"));
     }
 
     /// `--help` não é erro: é "não abra a janela".

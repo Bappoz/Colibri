@@ -101,10 +101,13 @@ impl Engine {
         println!("[engine] scene: {} objects", scene.len());
         println!("[engine] H prints the controls; F/C/T toggle the debug views");
 
+        let renderer = Renderer::new(config.render);
+        println!("[engine] raster threads: {}", renderer.threads());
+
         let mut engine = Self {
             window,
             surface,
-            renderer: Renderer::new(config.render),
+            renderer,
             scene,
             assets,
             input: InputState::new(),
