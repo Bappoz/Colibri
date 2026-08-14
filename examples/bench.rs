@@ -26,7 +26,7 @@ use std::time::Instant;
 use colibri::assets::{Assets, Texture};
 use colibri::math::Vec3d;
 use colibri::render::{RenderOptions, Renderer};
-use colibri::scene::{Camera, RenderObject, Scene, Transform};
+use colibri::scene::{Camera, MeshRenderer, Scene, Spin, Transform};
 
 /// Viewport width used when none is given, matching a common 1080p window.
 const DEFAULT_WIDTH: usize = 1920;
@@ -65,10 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let distance = zoom * assets.mesh(mesh).bounding_radius();
     let mut scene = Scene::new();
     scene.camera = Camera::new(Vec3d::new(0.0, 0.0, distance));
-    scene.spawn(
-        RenderObject::new(Transform::default(), mesh, texture)
-            .with_angular_velocity(Vec3d::new(0.0, 1.0, 0.0)),
-    );
+    let object = scene.spawn_object(Transform::default(), MeshRenderer::new(mesh, texture));
+    scene.world.insert(object, Spin(Vec3d::new(0.0, 1.0, 0.0)));
 
     let mut renderer = Renderer::new(RenderOptions {
         threads,

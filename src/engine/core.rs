@@ -21,7 +21,7 @@ use crate::engine::input::InputState;
 use crate::error::{Error, Result};
 use crate::math::Vec3d;
 use crate::render::Renderer;
-use crate::scene::{Camera, RenderObject, Scene, Transform};
+use crate::scene::{Camera, MeshRenderer, Scene, Spin, Transform};
 
 /// Size of the procedural checkerboard used when no texture file is given.
 const CHECKER_SIZE: u32 = 256;
@@ -98,7 +98,7 @@ impl Engine {
                 config.model_path
             );
         }
-        println!("[engine] scene: {} objects", scene.len());
+        println!("[engine] scene: {} objects", scene.drawable_count());
         println!("[engine] H prints the controls; F/C/T toggle the debug views");
 
         let renderer = Renderer::new(config.render);
@@ -317,24 +317,23 @@ fn build_demo_scene(mesh: MeshHandle, texture: TextureHandle, bounding_radius: f
     let mut scene = Scene::new();
     scene.camera = default_camera();
 
-    scene.spawn(
-        RenderObject::new(Transform::default().with_uniform_scale(unit), mesh, texture)
-            .with_angular_velocity(Vec3d::new(0.0, 0.6, 0.0)),
+    let center = scene.spawn_object(
+        Transform::default().with_uniform_scale(unit),
+        MeshRenderer::new(mesh, texture),
     );
+    scene.world.insert(center, Spin(Vec3d::new(0.0, 0.6, 0.0)));
 
     for (i, (tint, spin)) in RING.iter().enumerate() {
         let angle = i as f64 * std::f64::consts::FRAC_PI_2;
         let position = Vec3d::new(RING_RADIUS * angle.cos(), 0.0, RING_RADIUS * angle.sin());
 
-        scene.spawn(
-            RenderObject::new(
-                Transform::from_translation(position).with_uniform_scale(RING_SCALE * unit),
-                mesh,
-                texture,
-            )
-            .with_tint(*tint)
-            .with_angular_velocity(Vec3d::new(*spin, *spin * 0.5, 0.0)),
+        let satellite = scene.spawn_object(
+            Transform::from_translation(position).with_uniform_scale(RING_SCALE * unit),
+            MeshRenderer::new(mesh, texture).with_tint(*tint),
         );
+        scene
+            .world
+            .insert(satellite, Spin(Vec3d::new(*spin, *spin * 0.5, 0.0)));
     }
 
     scene
@@ -353,6 +352,18 @@ mod tests {
 
         let scene = build_demo_scene(mesh, texture, 1.0);
         assert_eq!(scene.len(), 5);
+        assert_eq!(scene.drawable_count(), 5);
+    }
+
+    /// Todo objeto da demo gira — o `Spin` é componente, não campo do bundle.
+    #[test]
+    fn every_demo_object_spins() {
+        let mut assets = Assets::new();
+        let mesh = assets.add_mesh(crate::assets::Mesh::textured_quad());
+        let texture = assets.add_texture(Texture::white());
+
+        let scene = build_demo_scene(mesh, texture, 1.0);
+        assert_eq!(scene.world.count::<Spin>(), 5);
     }
 
     /// Só os satélites giram com tint próprio; o central fica neutro.
@@ -364,8 +375,8 @@ mod tests {
 
         let scene = build_demo_scene(mesh, texture, 1.0);
         let tinted = scene
-            .objects()
-            .filter(|o| o.tint != crate::scene::NO_TINT)
+            .drawables()
+            .filter(|(_, renderer)| renderer.tint != crate::scene::NO_TINT)
             .count();
         assert_eq!(tinted, 4);
     }

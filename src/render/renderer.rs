@@ -32,7 +32,7 @@ use crate::math::{Mat4x4, Vec3d};
 use crate::render::clip::{ClipVertex, clip_near, trivial_reject};
 use crate::render::raster::{ScreenVertex, draw_wireframe, fill_triangle, signed_area};
 use crate::render::target::RenderTarget;
-use crate::scene::{RenderObject, Scene};
+use crate::scene::{MeshRenderer, Scene, Transform};
 
 /// Debug palette cycled per triangle when
 /// [`RenderOptions::debug_triangle_tint`] is on. Six colors is enough to make
@@ -283,12 +283,13 @@ impl Renderer {
         let view_projection =
             scene.camera.projection_matrix(self.aspect_ratio()) * scene.camera.view_matrix();
 
-        for object in scene.objects() {
+        for (transform, renderer) in scene.drawables() {
             stats.objects += 1;
             submit_object(
                 &mut jobs,
                 &mut cache,
-                object,
+                transform,
+                renderer,
                 scene,
                 assets,
                 &view_projection,
@@ -470,7 +471,8 @@ fn draw_band(
 fn submit_object(
     jobs: &mut Vec<RasterJob>,
     cache: &mut Vec<ClipVertex>,
-    object: &RenderObject,
+    transform: &Transform,
+    renderer: &MeshRenderer,
     scene: &Scene,
     assets: &Assets,
     view_projection: &Mat4x4,
@@ -478,8 +480,8 @@ fn submit_object(
     stats: &mut RenderStats,
     viewport: (f64, f64),
 ) {
-    let mesh = assets.mesh(object.mesh);
-    let model = object.transform.matrix();
+    let mesh = assets.mesh(renderer.mesh);
+    let model = transform.matrix();
     let model_view_projection = *view_projection * model;
     let (width, height) = viewport;
 
@@ -527,7 +529,7 @@ fn submit_object(
         let tint = if options.debug_triangle_tint {
             DEBUG_TINTS[index % DEBUG_TINTS.len()]
         } else {
-            object.tint
+            renderer.tint
         };
 
         // Clipping can split one triangle into two; both are submitted.
@@ -550,7 +552,7 @@ fn submit_object(
 
             jobs.push(RasterJob {
                 vertices,
-                texture: object.texture,
+                texture: renderer.texture,
                 tint,
                 min_y,
                 max_y,
@@ -563,8 +565,9 @@ fn submit_object(
 mod tests {
     use super::*;
     use crate::assets::{Mesh, Texture};
+    use crate::ecs::Entity;
     use crate::math::Vec3d;
-    use crate::scene::{Transform, camera::Camera};
+    use crate::scene::camera::Camera;
 
     /// Cena com um quad texturizado a 3 unidades da câmera, olhando para ela.
     fn quad_scene() -> (Scene, Assets) {
@@ -575,12 +578,21 @@ mod tests {
         let mut scene = Scene::new();
         scene.camera = Camera::new(Vec3d::ZERO);
         scene.light.ambient = 1.0;
-        scene.spawn(RenderObject::new(
+        scene.spawn_object(
             Transform::from_translation(Vec3d::new(0.0, 0.0, -3.0)),
-            mesh,
-            texture,
-        ));
+            MeshRenderer::new(mesh, texture),
+        );
         (scene, assets)
+    }
+
+    /// A única entidade desenhável da cena de teste.
+    fn only_entity(scene: &Scene) -> Entity {
+        scene
+            .world
+            .iter::<MeshRenderer>()
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("a cena de teste tem exatamente um objeto")
     }
 
     /// Renderiza a cena num buffer novo com a contagem de threads pedida.
@@ -645,8 +657,12 @@ mod tests {
     #[test]
     fn objects_behind_the_camera_are_discarded() {
         let (mut scene, assets) = quad_scene();
-        let entity = scene.iter().map(|(e, _)| e).next().unwrap();
-        scene.get_mut(entity).unwrap().transform.translation = Vec3d::new(0.0, 0.0, 3.0);
+        let entity = only_entity(&scene);
+        scene
+            .world
+            .get_mut::<Transform>(entity)
+            .unwrap()
+            .translation = Vec3d::new(0.0, 0.0, 3.0);
 
         let (color, stats) = render_with(4, &scene, &assets);
 
@@ -658,8 +674,8 @@ mod tests {
     #[test]
     fn culling_can_be_disabled() {
         let (mut scene, assets) = quad_scene();
-        let entity = scene.iter().map(|(e, _)| e).next().unwrap();
-        scene.get_mut(entity).unwrap().transform.rotation =
+        let entity = only_entity(&scene);
+        scene.world.get_mut::<Transform>(entity).unwrap().rotation =
             Vec3d::new(0.0, std::f64::consts::PI, 0.0);
 
         let mut renderer = Renderer::new(RenderOptions::default());
@@ -683,6 +699,30 @@ mod tests {
 
         let stats = renderer.render(&mut [], &scene, &assets);
         assert_eq!(stats, RenderStats::default());
+    }
+
+    /// Entidade sem `Transform` não é desenhável e nem chega a ser contada.
+    #[test]
+    fn an_entity_without_a_transform_is_not_rendered() {
+        let (mut scene, assets) = quad_scene();
+        let mesh = scene
+            .world
+            .iter::<MeshRenderer>()
+            .map(|(_, r)| r.mesh)
+            .next()
+            .unwrap();
+        let texture = scene
+            .world
+            .iter::<MeshRenderer>()
+            .map(|(_, r)| r.texture)
+            .next()
+            .unwrap();
+
+        let orphan = scene.world.spawn();
+        scene.world.insert(orphan, MeshRenderer::new(mesh, texture));
+
+        let (_, stats) = render_with(1, &scene, &assets);
+        assert_eq!(stats.objects, 1, "só o quad com transform foi visitado");
     }
 
     /// Cena vazia limpa a tela e reporta zero em tudo.
