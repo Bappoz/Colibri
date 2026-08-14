@@ -100,10 +100,15 @@ impl Camera {
 
     /// Applies a raw mouse delta, in pixels, scaled by `sensitivity`.
     ///
-    /// `dy` is subtracted because screen coordinates grow downwards while
-    /// pitch grows upwards.
+    /// Both deltas are subtracted, for the same reason on two different axes:
+    /// the screen and the world disagree about which way is positive.
+    ///
+    /// * `dx` grows to the right, but [`Camera::yaw`] grows counter-clockwise
+    ///   seen from above — which points the camera *left*. Adding it here is
+    ///   what made pushing the mouse right look left.
+    /// * `dy` grows downwards, while pitch grows upwards.
     pub fn process_mouse(&mut self, dx: f64, dy: f64, sensitivity: f64) {
-        self.yaw += dx * sensitivity;
+        self.yaw -= dx * sensitivity;
         self.pitch =
             (self.pitch - dy * sensitivity).clamp(-PITCH_LIMIT_RADIANS, PITCH_LIMIT_RADIANS);
     }
@@ -158,6 +163,38 @@ mod tests {
         let forward = camera.forward();
         assert!((forward.z() + 1.0).abs() < 1e-12);
         assert!((camera.right().x() - 1.0).abs() < 1e-12);
+    }
+
+    /// Mouse para a direita olha para a direita. O sinal do yaw é fácil de
+    /// inverter sem perceber, porque `forward` já carrega um menos no seno.
+    #[test]
+    fn moving_the_mouse_right_looks_right() {
+        let mut camera = Camera::default();
+        camera.process_mouse(100.0, 0.0, 0.0025);
+
+        assert!(
+            camera.forward().x() > 0.0,
+            "dx positivo tem que virar para +X, veio {}",
+            camera.forward().x()
+        );
+    }
+
+    /// E para a esquerda, para a esquerda.
+    #[test]
+    fn moving_the_mouse_left_looks_left() {
+        let mut camera = Camera::default();
+        camera.process_mouse(-100.0, 0.0, 0.0025);
+
+        assert!(camera.forward().x() < 0.0);
+    }
+
+    /// Mouse para baixo olha para baixo — a convenção não invertida.
+    #[test]
+    fn moving_the_mouse_down_looks_down() {
+        let mut camera = Camera::default();
+        camera.process_mouse(0.0, 100.0, 0.0025);
+
+        assert!(camera.forward().y() < 0.0);
     }
 
     /// O pitch trava antes dos 90° — é o que evita o gimbal flip.
