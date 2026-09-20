@@ -160,6 +160,49 @@ impl World {
             .flat_map(|column| column.iter_mut())
     }
 
+    /// Iterates every entityy carrying both `A` and a `B`.
+    /// The walk goes over the `A` column and looks each entity up in `B`, so the order
+    /// of the type parameters is the order of the loop: put the rarer component first.
+    pub fn query2<A: 'static, B: 'static>(&self) -> impl Iterator<Item = (Entity, &A, &B)> + '_ {
+        // 'zip' collapses "either was never created" into 'None',
+        // which 'into_iter().flat_map' turns into a empty iteration
+        let columns = self.column_opt::<A>().zip(self.column_opt::<B>());
+        columns.into_iter().flat_map(|(a, b)| {
+            a.iter()
+                .filter_map(move |(entity, a)| Some((entity, a, b.get(entity)?)))
+        })
+    }
+
+    /// Like [`World::query2`], but yields `&mut B`.
+    ///
+    /// Reads `A`, writes `B`. The walk goes over the `B` column: an iterator
+    /// cannot hand out `&mut` obtained through a per-entity `get_mut` (the
+    /// borrow would have to outlive `next`), but `iter_mut` can, and the
+    /// shared side is just a lookup.
+    ///
+    /// # Panics
+    ///
+    /// When `A` and `B` are the same type: that would be a shared and a mutable
+    /// borrow of one column.
+    pub fn query2_mut<A: 'static, B: 'static>(
+        &mut self,
+    ) -> impl Iterator<Item = (Entity, &A, &mut B)> + '_ {
+        let (id_a, id_b) = (TypeId::of::<A>(), TypeId::of::<B>());
+        assert_ne!(id_a, id_b, "query2_mut needs two different component types");
+
+        // Two disjoint '&mut' into the map; the std panics on equal key which
+        // The assert above already turned into a clearer message.
+        let [a, b] = self.columns.get_disjoint_mut([&id_a, &id_b]);
+        let columns = a
+            .and_then(|a| a.as_any().downcast_ref::<SparseSet<A>>())
+            .zip(b.and_then(|b| b.as_any_mut().downcast_mut::<SparseSet<B>>()));
+
+        columns.into_iter().flat_map(|(a, b)| {
+            b.iter_mut()
+                .filter_map(move |(entity, b)| Some((entity, a.get(entity)?, b)))
+        })
+    }
+
     /// How many entities carry a `T`.
     pub fn count<T: 'static>(&self) -> usize {
         self.columns
@@ -217,6 +260,57 @@ mod tests {
         assert_eq!(world.get::<Position>(e), None);
         assert!(!world.contains::<Position>(e));
         assert_eq!(world.len(), 1);
+    }
+
+    /// A query só produz quem tem os dois componentes.
+    #[test]
+    fn query2_yields_only_the_intersection() {
+        let mut world = World::new();
+        let (both, only_pos, only_vel) = (world.spawn(), world.spawn(), world.spawn());
+        world.insert(both, Position(1));
+        world.insert(both, Velocity(10));
+        world.insert(only_pos, Position(2));
+        world.insert(only_vel, Velocity(30));
+
+        let got: Vec<_> = world.query2::<Position, Velocity>().collect();
+
+        assert_eq!(got, vec![(both, &Position(1), &Velocity(10))]);
+    }
+
+    /// `query2_mut` lê um lado e escreve no outro, sem tocar em quem não casa.
+    #[test]
+    fn query2_mut_writes_only_the_matching_entities() {
+        let mut world = World::new();
+        let (moving, still) = (world.spawn(), world.spawn());
+        world.insert(moving, Position(1));
+        world.insert(moving, Velocity(10));
+        world.insert(still, Position(2));
+
+        for (_, velocity, position) in world.query2_mut::<Velocity, Position>() {
+            position.0 += velocity.0;
+        }
+
+        assert_eq!(world.get::<Position>(moving), Some(&Position(11)));
+        assert_eq!(world.get::<Position>(still), Some(&Position(2)));
+    }
+
+    /// Tipo que nunca foi inserido: query vazia, sem pânico e sem criar coluna.
+    #[test]
+    fn a_query_over_an_unknown_component_is_empty() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position(1));
+
+        assert_eq!(world.query2::<Position, Velocity>().count(), 0);
+        assert_eq!(world.query2_mut::<Velocity, Position>().count(), 0);
+    }
+
+    /// Emprestar a mesma coluna como `&` e `&mut` é o bug que a regra impede.
+    #[test]
+    #[should_panic(expected = "two different component types")]
+    fn query2_mut_rejects_the_same_type_twice() {
+        let mut world = World::new();
+        let _ = world.query2_mut::<Position, Position>().count();
     }
 
     /// Colunas de tipos diferentes convivem sem se misturar.
