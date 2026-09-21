@@ -28,7 +28,7 @@ pub use light::DirectionalLight;
 pub use transform::Transform;
 
 use crate::assets::{MeshHandle, TextureHandle};
-use crate::ecs::{Entity, World};
+use crate::ecs::{Entity, Schedule, World};
 use crate::math::Vec3d;
 
 /// Tint that leaves the sampled texture untouched (white, fully modulated).
@@ -75,7 +75,6 @@ impl MeshRenderer {
 pub struct Spin(pub Vec3d);
 
 /// A camera, a light and a world of entities.
-#[derive(Default)]
 pub struct Scene {
     /// The entities and their components.
     pub world: World,
@@ -83,6 +82,21 @@ pub struct Scene {
     pub camera: Camera,
     /// The single directional light lighting every object.
     pub light: DirectionalLight,
+    /// System run, in order, by [`Scene::update`]
+    schedule: Schedule,
+}
+
+impl Default for Scene {
+    fn default() -> Self {
+        let mut schedule = Schedule::new();
+        schedule.add(spin_system);
+        Self {
+            world: World::default(),
+            camera: Camera::default(),
+            light: DirectionalLight::default(),
+            schedule,
+        }
+    }
 }
 
 impl Scene {
@@ -111,8 +125,8 @@ impl Scene {
     /// renderer, while transforms also belong to entities that are never drawn.
     pub fn drawables(&self) -> impl Iterator<Item = (&Transform, &MeshRenderer)> + '_ {
         self.world
-            .iter::<MeshRenderer>()
-            .filter_map(|(entity, renderer)| Some((self.world.get::<Transform>(entity)?, renderer)))
+            .query2::<MeshRenderer, Transform>()
+            .map(|(_, renderer, transform)| (transform, renderer))
     }
 
     /// Number of drawable entities.
@@ -134,25 +148,20 @@ impl Scene {
     ///
     /// The whole simulation, for now: one system. When there is a second one,
     /// this is where the scheduler of the next stage takes over.
+    /// Advances the scene by `dt` seconds, running every scheduled system.
     pub fn update(&mut self, dt: f64) {
-        spin_system(&mut self.world, dt);
+        self.schedule.run(&mut self.world, dt)
     }
 }
 
 /// Integrates every [`Spin`] into its entity's [`Transform`].
 ///
-/// The two-column shape the borrow checker cannot see through yet: iterating
-/// `Spin` borrows the world immutably while `get_mut::<Transform>` wants it
-/// mutably, even though the two columns are provably disjoint. Collecting the
-/// pairs first is the honest workaround until the typed queries of the next
-/// stage; `Spin` is one `Vec3d`, so the copy is cheap.
+/// Reads `Spin`, writes `Transform`: exactly the shape of
+/// [`World::query2_mut`]. Entities with a `Spin` and no `Transform` simply
+/// never match.
 pub fn spin_system(world: &mut World, dt: f64) {
-    let spins: Vec<(Entity, Spin)> = world.iter::<Spin>().map(|(e, spin)| (e, *spin)).collect();
-
-    for (entity, spin) in spins {
-        if let Some(transform) = world.get_mut::<Transform>(entity) {
-            transform.rotation += spin.0 * dt;
-        }
+    for (_, spin, transform) in world.query2_mut::<Spin, Transform>() {
+        transform.rotation += spin.0 * dt;
     }
 }
 
