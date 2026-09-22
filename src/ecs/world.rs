@@ -160,6 +160,27 @@ impl World {
             .flat_map(|column| column.iter_mut())
     }
 
+    /// Borrows the one entity expected to carry a `T`.
+    ///
+    /// For resources that live as a single component — the camera, for
+    /// instance — instead of a special field outside the world. Panics when
+    /// zero or more than one entity carries `T`: both are bugs, not states the
+    /// caller should have to handle.
+    pub fn single<T: 'static>(&self) -> &T {
+        let mut it = self.iter::<T>();
+        let (_, value) = it.next().expect("single::<T>() found no entity");
+        assert!(it.next().is_none(), "single::<T>() found more than one entity");
+        value
+    }
+    /// Mutable counterpart of [`World::single`]
+    pub fn single_mut<T: 'static>(&mut self) -> &mut T {
+        let mut it = self.iter_mut::<T>();
+        let (_, value) = it.next().expect("single_mut::<T>() found no entity");
+        assert!(it.next().is_none(), "single::<T>() found more than one entity");
+        value
+    }
+
+
     /// Iterates every entityy carrying both `A` and a `B`.
     /// The walk goes over the `A` column and looks each entity up in `B`, so the order
     /// of the type parameters is the order of the loop: put the rarer component first.
@@ -439,5 +460,34 @@ mod tests {
             .collect();
 
         assert_eq!(moved, vec![11]);
+    }
+
+    /// `single` find the only entity with label.
+    #[test]
+    fn single_finds_the_one_entity() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Position(1));
+
+        assert_eq!(world.single::<Position>(), &Position(1));
+    }
+
+    /// If no entity with label: breaks with clear message.
+    #[test]
+    #[should_panic(expected = "found no entity")]
+    fn single_panics_when_nobody_has_it() {
+        World::new().single::<Position>();
+    }
+
+    /// two entities with the same label: Also a dev error.
+    #[test]
+    #[should_panic(expected = "found more than one")]
+    fn single_panics_when_more_than_one_has_it() {
+        let mut world = World::new();
+        let (a, b) = (world.spawn(), world.spawn());
+        world.insert(a, Position(1));
+        world.insert(b, Position(2));
+
+        world.single::<Position>();
     }
 }

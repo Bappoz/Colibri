@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // fill-rate case — the one that gets slow in the real application.
     let distance = zoom * assets.mesh(mesh).bounding_radius();
     let mut scene = Scene::new();
-    scene.camera = Camera::new(Vec3d::new(0.0, 0.0, distance));
+    *scene.camera_mut() = Camera::new(Vec3d::new(0.0, 0.0, distance));
     let object = scene.spawn_object(Transform::default(), MeshRenderer::new(mesh, texture));
     scene.world.insert(object, Spin(Vec3d::new(0.0, 1.0, 0.0)));
 

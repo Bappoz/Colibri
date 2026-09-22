@@ -78,8 +78,6 @@ pub struct Spin(pub Vec3d);
 pub struct Scene {
     /// The entities and their components.
     pub world: World,
-    /// Point of view used to render the scene.
-    pub camera: Camera,
     /// The single directional light lighting every object.
     pub light: DirectionalLight,
     /// System run, in order, by [`Scene::update`]
@@ -88,11 +86,15 @@ pub struct Scene {
 
 impl Default for Scene {
     fn default() -> Self {
+        let mut world = World::default();
+        let camera_entity = world.spawn();
+        world.insert(camera_entity, Camera::default());
+
         let mut schedule = Schedule::new();
         schedule.add(spin_system);
+
         Self {
-            world: World::default(),
-            camera: Camera::default(),
+            world,
             light: DirectionalLight::default(),
             schedule,
         }
@@ -115,6 +117,16 @@ impl Scene {
         self.world.insert(entity, transform);
         self.world.insert(entity, renderer);
         entity
+    }
+
+    /// The scene's single camera.
+    pub fn camera(&self) -> &Camera {
+        self.world.single::<Camera>()
+    }
+
+    /// Mutable access to the scene's single camera.
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        self.world.single_mut::<Camera>()
     }
 
     /// Iterates the drawable entities: those carrying both a [`Transform`] and
@@ -310,5 +322,14 @@ mod tests {
             scene.world.get::<MeshRenderer>(tinted).unwrap().tint,
             0x00FF_0000
         );
+    }
+
+    /// A câmera é uma entidade de verdade: existe desde que a cena nasce, e
+    /// `despawn` nela devolveria a cena para um estado sem `single` válido —
+    /// mas ninguém de fora tem o `Entity` dela para fazer isso.
+    #[test]
+    fn the_scene_is_born_with_exactly_one_camera() {
+        let scene = Scene::new();
+        assert_eq!(scene.camera().position, Vec3d::ZERO);
     }
 }

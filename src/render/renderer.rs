@@ -281,7 +281,7 @@ impl Renderer {
 
         // One product for the whole frame instead of one per vertex.
         let view_projection =
-            scene.camera.projection_matrix(self.aspect_ratio()) * scene.camera.view_matrix();
+            scene.camera().projection_matrix(self.aspect_ratio()) * scene.camera().view_matrix();
 
         for (transform, renderer) in scene.drawables() {
             stats.objects += 1;
@@ -576,7 +576,7 @@ mod tests {
         let texture = assets.add_texture(Texture::checkerboard(64, 8));
 
         let mut scene = Scene::new();
-        scene.camera = Camera::new(Vec3d::ZERO);
+        *scene.camera_mut() = Camera::new(Vec3d::ZERO);
         scene.light.ambient = 1.0;
         scene.spawn_object(
             Transform::from_translation(Vec3d::new(0.0, 0.0, -3.0)),

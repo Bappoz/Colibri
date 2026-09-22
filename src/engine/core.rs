@@ -199,10 +199,10 @@ impl Engine {
 
         let (dx, dy) = self.input.take_mouse_delta();
         self.scene
-            .camera
+            .camera_mut()
             .process_mouse(dx, dy, self.config.mouse_sensitivity);
         self.scene
-            .camera
+            .camera_mut()
             .process_keyboard(&self.input, self.config.move_speed, dt);
 
         self.scene.update(dt);
@@ -256,7 +256,7 @@ impl Engine {
                 println!("[engine] triangle tint: {}", options.debug_triangle_tint);
             }
             KeyCode::KeyR => {
-                self.scene.camera = default_camera();
+                *self.scene.camera_mut() = default_camera();
                 println!("[engine] camera reset");
             }
             KeyCode::KeyH => println!("{}", EngineConfig::usage()),
@@ -315,7 +315,7 @@ fn build_demo_scene(mesh: MeshHandle, texture: TextureHandle, bounding_radius: f
     };
 
     let mut scene = Scene::new();
-    scene.camera = default_camera();
+    *scene.camera_mut() = default_camera();
 
     let center = scene.spawn_object(
         Transform::default().with_uniform_scale(unit),
