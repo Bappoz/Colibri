@@ -29,10 +29,46 @@ pub use transform::Transform;
 
 use crate::assets::{MeshHandle, TextureHandle};
 use crate::ecs::{Entity, Schedule, World};
-use crate::math::Vec3d;
+use crate::math::{Mat4x4, Vec3d};
 
 /// Tint that leaves the sampled texture untouched (white, fully modulated).
 pub const NO_TINT: u32 = 0x00FF_FFFF;
+
+/// How many ancestors `world_matrix` climbs before giving up.
+///
+/// Protects against a `Parent` cycle (A parent of B parent of A), which would
+/// otherwise walk forever. 64 is far beyond any hierarchy this engine expects.
+const MAX_HIERARCHY_DEPTH: usize = 64;
+
+/// The world-space matrix of `entity`: its own [`Transform`], folded into
+/// every ancestor's, root first.
+///
+/// An entity with no [`Parent`] gets exactly `Transform::matrix()` back — the
+/// hierarchy is invisible to a scene that never uses it. An entity with no
+/// `Transform` at all gets the identity matrix.
+pub fn world_matrix(world: &World, entity: Entity) -> Mat4x4 {
+    // Walk UP toward the root, collecting each ancestor's local matrix
+    let mut chain = Vec::new();
+    let mut current = Some(entity);
+    for _ in 0..MAX_HIERARCHY_DEPTH {
+        let Some(node) = current else { break };
+        let Some(transform) = world.get::<Transform>(node) else {
+            break;
+        };
+        chain.push(transform.matrix());
+        current = world.get::<Parent>(node).map(|parent| parent.0);
+    }
+
+    // Multiply root-to-leaf: `chain` was collected leaf-to-root, so reverse it
+    // first. `fold` starting from the identity handles the "no ancestors"
+    // case (a root) for free — the loop body just never runs twice.
+    chain
+        .into_iter()
+        .rev()
+        .fold(Mat4x4::identity(), |world_so_far, local| {
+            world_so_far * local
+        })
+}
 
 /// Geometry and how to shade it.
 ///
@@ -73,6 +109,14 @@ impl MeshRenderer {
 /// drawable, and be drawable without spinning. [`spin_system`] consumes it.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Spin(pub Vec3d);
+
+/// Which entity, if any, this one's [`Transform`] is relative to.
+///
+/// No `Parent` means the transform is already in world space — the entity is
+/// a root. Like every component, `Parent` needs no registration; the world
+/// creates its column on first insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parent(pub Entity);
 
 /// A camera, a light and a world of entities.
 pub struct Scene {
@@ -182,6 +226,15 @@ mod tests {
     use super::*;
     use crate::assets::{Assets, Mesh, Texture};
 
+    /// Um `MeshRenderer` qualquer, para testes que só se importam com posição
+    /// — precisa de um `Assets` de verdade, porque os handles não têm
+    /// construtor público (só nascem de `Assets::add_mesh`/`add_texture`).
+    fn dummy_renderer(assets: &mut Assets) -> MeshRenderer {
+        let mesh = assets.add_mesh(Mesh::textured_quad());
+        let texture = assets.add_texture(Texture::white());
+        MeshRenderer::new(mesh, texture)
+    }
+
     /// Cena mínima com um asset de cada, para os testes não repetirem setup.
     fn scene_with_one_object() -> (Scene, Assets, Entity) {
         let mut assets = Assets::new();
@@ -198,7 +251,8 @@ mod tests {
     fn spawn_object_attaches_transform_and_renderer() {
         let (scene, _assets, entity) = scene_with_one_object();
 
-        assert_eq!(scene.len(), 1);
+        // 2: o objeto recém-criado, mais a câmera, que já nasce com a cena.
+        assert_eq!(scene.len(), 2);
         assert!(scene.world.contains::<Transform>(entity));
         assert!(scene.world.contains::<MeshRenderer>(entity));
         assert_eq!(scene.drawable_count(), 1);
@@ -213,7 +267,8 @@ mod tests {
 
         assert!(scene.world.get::<Transform>(entity).is_none());
         assert!(scene.world.get::<MeshRenderer>(entity).is_none());
-        assert!(scene.is_empty());
+        // Não fica vazia: a câmera continua viva.
+        assert_eq!(scene.len(), 1);
         assert_eq!(scene.drawable_count(), 0);
         assert!(!scene.world.despawn(entity), "despawn duplo é no-op");
     }
@@ -244,7 +299,8 @@ mod tests {
         scene.world.insert(marker, Transform::IDENTITY);
         scene.world.insert(marker, Spin(Vec3d::new(0.0, 1.0, 0.0)));
 
-        assert_eq!(scene.len(), 2, "as duas entidades estão vivas");
+        // 3: o objeto, o marcador e a câmera, que já nasce com a cena.
+        assert_eq!(scene.len(), 3, "as três entidades estão vivas");
         assert_eq!(scene.drawable_count(), 1, "só uma tem malha");
 
         scene.update(1.0);
@@ -331,5 +387,111 @@ mod tests {
     fn the_scene_is_born_with_exactly_one_camera() {
         let scene = Scene::new();
         assert_eq!(scene.camera().position, Vec3d::ZERO);
+    }
+
+    /// Sem `Parent`, a matriz global é exatamente a local.
+    #[test]
+    fn world_matrix_of_a_root_is_its_own_local_matrix() {
+        let mut assets = Assets::new();
+        let mut scene = Scene::new();
+        let transform = Transform::from_translation(Vec3d::new(1.0, 2.0, 3.0));
+        let entity = scene.spawn_object(transform, dummy_renderer(&mut assets));
+
+        let world = crate::scene::world_matrix(&scene.world, entity);
+
+        assert_eq!(world, transform.matrix());
+    }
+
+    /// Um filho soma a matriz do pai com a própria — sol e planeta.
+    #[test]
+    fn world_matrix_of_a_child_folds_in_the_parent() {
+        let mut assets = Assets::new();
+        let mut scene = Scene::new();
+        let sun = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(10.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        let planet = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(5.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        scene.world.insert(planet, Parent(sun));
+
+        let world = crate::scene::world_matrix(&scene.world, planet);
+
+        // O planeta orbita 5 unidades do sol, que está em 10 — no mundo, 15.
+        let position = world.transform_point(Vec3d::ZERO);
+        assert!((position.x() - 15.0).abs() < 1e-9);
+    }
+
+    /// Três gerações: sol, planeta, lua — o teste "aha" do scene graph.
+    #[test]
+    fn world_matrix_of_a_grandchild_folds_in_every_ancestor() {
+        let mut assets = Assets::new();
+        let mut scene = Scene::new();
+        let sun = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(10.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        let planet = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(5.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        scene.world.insert(planet, Parent(sun));
+        let moon = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(1.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        scene.world.insert(moon, Parent(planet));
+
+        let world = crate::scene::world_matrix(&scene.world, moon);
+        let position = world.transform_point(Vec3d::ZERO);
+
+        // 10 (sol) + 5 (planeta) + 1 (lua) = 16.
+        assert!((position.x() - 16.0).abs() < 1e-9);
+    }
+
+    /// Mover o pai move o filho junto — a promessa central da etapa.
+    #[test]
+    fn moving_the_parent_moves_the_child_along() {
+        let mut assets = Assets::new();
+        let mut scene = Scene::new();
+        let sun = scene.spawn_object(Transform::IDENTITY, dummy_renderer(&mut assets));
+        let moon = scene.spawn_object(
+            Transform::from_translation(Vec3d::new(2.0, 0.0, 0.0)),
+            dummy_renderer(&mut assets),
+        );
+        scene.world.insert(moon, Parent(sun));
+
+        scene.world.get_mut::<Transform>(sun).unwrap().translation = Vec3d::new(100.0, 0.0, 0.0);
+
+        let position = crate::scene::world_matrix(&scene.world, moon).transform_point(Vec3d::ZERO);
+        assert!((position.x() - 102.0).abs() < 1e-9);
+    }
+
+    /// Um ciclo (A pai de B, B pai de A) não pode travar o programa.
+    #[test]
+    fn a_parent_cycle_does_not_hang() {
+        let mut assets = Assets::new();
+        let mut scene = Scene::new();
+        let a = scene.spawn_object(Transform::IDENTITY, dummy_renderer(&mut assets));
+        let b = scene.spawn_object(Transform::IDENTITY, dummy_renderer(&mut assets));
+        scene.world.insert(a, Parent(b));
+        scene.world.insert(b, Parent(a));
+
+        // Só precisa devolver — se travasse, o teste nunca terminaria.
+        let _ = crate::scene::world_matrix(&scene.world, a);
+    }
+
+    /// Sem `Transform` nenhum, a matriz é a identidade.
+    #[test]
+    fn an_entity_without_a_transform_gets_the_identity() {
+        let scene = Scene::new();
+        let entity = scene.world.entities().next().unwrap(); // a câmera, sem Transform
+
+        assert_eq!(
+            crate::scene::world_matrix(&scene.world, entity),
+            Mat4x4::identity()
+        );
     }
 }

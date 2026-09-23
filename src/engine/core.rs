@@ -351,7 +351,8 @@ mod tests {
         let texture = assets.add_texture(Texture::white());
 
         let scene = build_demo_scene(mesh, texture, 1.0);
-        assert_eq!(scene.len(), 5);
+        // 6: os cinco objetos da demo, mais a câmera, que já nasce com a cena.
+        assert_eq!(scene.len(), 6);
         assert_eq!(scene.drawable_count(), 5);
     }
 

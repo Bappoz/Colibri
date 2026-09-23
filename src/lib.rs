@@ -36,7 +36,7 @@
 //! let texture = assets.add_texture(Texture::checkerboard(64, 8));
 //!
 //! let mut scene = Scene::new();
-//! scene.camera = Camera::new(Vec3d::ZERO);
+//! *scene.camera_mut() = Camera::new(Vec3d::ZERO);
 //!
 //! // A drawable entity is a Transform plus a MeshRenderer; anything else it
 //! // needs — a Spin, here — is one more component on the same id.

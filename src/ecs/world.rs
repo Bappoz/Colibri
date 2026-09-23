@@ -169,17 +169,22 @@ impl World {
     pub fn single<T: 'static>(&self) -> &T {
         let mut it = self.iter::<T>();
         let (_, value) = it.next().expect("single::<T>() found no entity");
-        assert!(it.next().is_none(), "single::<T>() found more than one entity");
+        assert!(
+            it.next().is_none(),
+            "single::<T>() found more than one entity"
+        );
         value
     }
     /// Mutable counterpart of [`World::single`]
     pub fn single_mut<T: 'static>(&mut self) -> &mut T {
         let mut it = self.iter_mut::<T>();
         let (_, value) = it.next().expect("single_mut::<T>() found no entity");
-        assert!(it.next().is_none(), "single::<T>() found more than one entity");
+        assert!(
+            it.next().is_none(),
+            "single::<T>() found more than one entity"
+        );
         value
     }
-
 
     /// Iterates every entityy carrying both `A` and a `B`.
     /// The walk goes over the `A` column and looks each entity up in `B`, so the order

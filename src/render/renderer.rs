@@ -25,14 +25,13 @@
 //! the single-threaded path, whatever the thread count — a band always sees
 //! the same jobs in the same order.
 
-use std::sync::Mutex;
-
 use crate::assets::{Assets, TextureHandle};
 use crate::math::{Mat4x4, Vec3d};
 use crate::render::clip::{ClipVertex, clip_near, trivial_reject};
 use crate::render::raster::{ScreenVertex, draw_wireframe, fill_triangle, signed_area};
 use crate::render::target::RenderTarget;
-use crate::scene::{MeshRenderer, Scene, Transform};
+use crate::scene::{MeshRenderer, Scene, Transform, world_matrix};
+use std::sync::Mutex;
 
 /// Debug palette cycled per triangle when
 /// [`RenderOptions::debug_triangle_tint`] is on. Six colors is enough to make
@@ -283,12 +282,13 @@ impl Renderer {
         let view_projection =
             scene.camera().projection_matrix(self.aspect_ratio()) * scene.camera().view_matrix();
 
-        for (transform, renderer) in scene.drawables() {
+        for (entity, renderer, _transform) in scene.world.query2::<MeshRenderer, Transform>() {
             stats.objects += 1;
+            let model = world_matrix(&scene.world, entity);
             submit_object(
                 &mut jobs,
                 &mut cache,
-                transform,
+                model,
                 renderer,
                 scene,
                 assets,
@@ -471,7 +471,7 @@ fn draw_band(
 fn submit_object(
     jobs: &mut Vec<RasterJob>,
     cache: &mut Vec<ClipVertex>,
-    transform: &Transform,
+    model: Mat4x4,
     renderer: &MeshRenderer,
     scene: &Scene,
     assets: &Assets,
@@ -481,7 +481,6 @@ fn submit_object(
     viewport: (f64, f64),
 ) {
     let mesh = assets.mesh(renderer.mesh);
-    let model = transform.matrix();
     let model_view_projection = *view_projection * model;
     let (width, height) = viewport;
 
