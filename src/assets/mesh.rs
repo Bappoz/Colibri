@@ -161,12 +161,8 @@ impl Mesh {
     pub fn compute_vertex_normals(&mut self) {
         let mut accumulated = vec![Vec3d::ZERO; self.vertices.len()];
 
-        for triangle in self.indices.chunks_exact(3) {
-            let [i0, i1, i2] = [
-                triangle[0] as usize,
-                triangle[1] as usize,
-                triangle[2] as usize,
-            ];
+        for &[i0, i1, i2] in self.indices.as_chunks::<3>().0 {
+            let (i0, i1, i2) = (i0 as usize, i1 as usize, i2 as usize);
             let (p0, p1, p2) = (
                 self.position_of(i0),
                 self.position_of(i1),

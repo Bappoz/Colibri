@@ -511,7 +511,7 @@ fn submit_object(
     }
 
     // --- triangle stage ---
-    for (index, face) in mesh.indices.chunks_exact(3).enumerate() {
+    for (index, &face) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         stats.triangles_submitted += 1;
 
         let triangle = [
