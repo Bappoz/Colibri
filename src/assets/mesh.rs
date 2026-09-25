@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::math::Vec3d;
+use gltf::{Buffer, Primitive};
 
 /// A single mesh vertex.
 ///
@@ -219,6 +220,61 @@ impl Mesh {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
         }
+    }
+
+    /// Builds a mesh from one glTF primitive.
+    ///
+    /// `get_buffer_data` resolves a glTF buffer to its bytes — the caller owns
+    /// that data (from [`gltf::import`]), so this stays a pure conversion with
+    /// no I/O of its own.
+    ///
+    /// Indices are widened to `u32` regardless of their source width (glTF
+    /// allows `u8`/`u16`/`u32`). An unindexed primitive receives sequential
+    /// indices. UVs are read as-is, with **no V-flip** —
+    /// unlike `.obj`, glTF already puts the UV origin at the top-left, which
+    /// matches how [`crate::assets::Texture`] samples.
+    pub fn from_gltf_primitive<'a>(
+        primitive: &'a Primitive<'a>,
+        get_buffer_data: impl Clone + Fn(Buffer<'a>) -> Option<&'a [u8]>,
+    ) -> Option<Self> {
+        if primitive.mode() != gltf::mesh::Mode::Triangles {
+            return None;
+        }
+
+        let reader = primitive.reader(get_buffer_data);
+        let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
+        let indices: Vec<u32> = reader
+            .read_indices()
+            .map(|indices| indices.into_u32().collect())
+            .unwrap_or_else(|| (0..positions.len() as u32).collect());
+
+        // Normals and UVs are optional in glTF; fall back the same way the
+        // `.obj` loader does — zeroed normals get fixed up below, missing UVs
+        // sample one flat texel.
+        let normals: Vec<[f32; 3]> = reader
+            .read_normals()
+            .map_or_else(|| vec![[0.0, 0.0, 0.0]; positions.len()], |n| n.collect());
+        let uvs: Vec<[f32; 2]> = reader.read_tex_coords(0).map_or_else(
+            || vec![[0.0, 0.0]; positions.len()],
+            |uv| uv.into_f32().collect(),
+        );
+
+        let vertices = positions
+            .into_iter()
+            .zip(normals)
+            .zip(uvs)
+            .map(|((position, normal), uv)| Vertex {
+                position,
+                normal,
+                uv,
+            })
+            .collect();
+
+        let mut mesh = Self { vertices, indices };
+        if !mesh.vertices.iter().any(|v| v.normal != [0.0, 0.0, 0.0]) {
+            mesh.compute_vertex_normals();
+        }
+        Some(mesh)
     }
 }
 

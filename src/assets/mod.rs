@@ -9,9 +9,11 @@
 //! only ever added; reloading and eviction arrive with the asset stage of the
 //! roadmap, and will need a generation just like [`crate::ecs::Entity`].
 
+pub mod gtlf_imports;
 pub mod mesh;
 pub mod texture;
 
+pub use gtlf_imports::spawn_gltf_scene;
 pub use mesh::{Mesh, Vertex};
 pub use texture::Texture;
 

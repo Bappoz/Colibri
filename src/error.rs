@@ -38,6 +38,27 @@ pub enum Error {
     },
     /// The platform failed to hand back a drawable surface for the window.
     Surface(String),
+    /// A `.gltf`/`.glb` file could not be read or parsed.
+    GltfLoad {
+        /// Path that the engine tried to open.
+        path: String,
+        /// Message from the underlying loader.
+        reason: String,
+    },
+    /// A glTF file parsed, but its default scene has no nodes to spawn.
+    EmptyGltfScene {
+        /// Path of the scene file.
+        path: String,
+    },
+    /// A glTF node carries a rotation or a non-uniform scale — the engine's
+    /// `Transform` only understands translation and uniform scale until the
+    /// animation stage brings in quaternions.
+    UnsupportedNodeTransform {
+        /// Path the engine tried to open.
+        path: String,
+        /// The node's name, when the file bothered to name it.
+        node: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -55,6 +76,19 @@ impl fmt::Display for Error {
                 write!(f, "failed to load texture '{path}': {reason}")
             }
             Error::Surface(reason) => write!(f, "failed to set up the render surface: {reason}"),
+            Error::GltfLoad { path, reason } => {
+                write!(f, "failed to load glTF scene '{path}': {reason}")
+            }
+            Error::EmptyGltfScene { path } => {
+                write!(f, "glTF scene '{path}' has no nodes in its default scene")
+            }
+            Error::UnsupportedNodeTransform { path, node } => {
+                write!(
+                    f,
+                    "node '{node}' in '{path}' has a rotation or non-uniform scale, \
+                 which Transform (Euler-angle) cannot represent yet"
+                )
+            }
         }
     }
 }
