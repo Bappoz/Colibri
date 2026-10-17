@@ -6,6 +6,7 @@
 //! the pieces run in.
 
 use std::num::NonZeroU32;
+use std::path::Path;
 use std::rc::Rc;
 
 use softbuffer::{Context, Surface};
@@ -14,7 +15,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window};
 
-use crate::assets::{Assets, MeshHandle, Texture, TextureHandle};
+use crate::assets::{Assets, MeshHandle, Texture, TextureHandle, spawn_gltf_scene};
 use crate::engine::clock::FrameClock;
 use crate::engine::config::EngineConfig;
 use crate::engine::input::InputState;
@@ -77,21 +78,45 @@ impl Engine {
             .map_err(|e| Error::Surface(format!("softbuffer surface: {e}")))?;
 
         let mut assets = Assets::new();
-        let mesh = assets.load_mesh(&config.model_path)?;
         let texture = match config.texture_path.as_deref() {
             Some(path) => assets.load_texture(path)?,
             None => assets.add_texture(Texture::checkerboard(CHECKER_SIZE, CHECKER_CELL)),
         };
 
-        let scene = build_demo_scene(mesh, texture, assets.mesh(mesh).bounding_radius());
+        let extension = Path::new(&config.model_path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| Error::UnsupportedModelFormat {
+                path: config.model_path.clone(),
+            })?;
+
+        let (scene, obj_mesh) = match extension.as_str() {
+            "obj" => {
+                let mesh = assets.load_mesh(&config.model_path)?;
+                let scene = build_demo_scene(mesh, texture, assets.mesh(mesh).bounding_radius());
+                (scene, Some(mesh))
+            }
+            "gltf" | "glb" => {
+                let mut scene = Scene::new();
+                *scene.camera_mut() = default_camera();
+                spawn_gltf_scene(&mut scene, &mut assets, &config.model_path, texture)?;
+                (scene, None)
+            }
+            _ => {
+                return Err(Error::UnsupportedModelFormat {
+                    path: config.model_path.clone(),
+                });
+            }
+        };
 
         println!(
-            "[engine] loaded '{}': {} vertices, {} triangles",
+            "[engine] loaded '{}': {} meshes, {} triangles",
             config.model_path,
-            assets.mesh(mesh).vertices.len(),
+            assets.mesh_count(),
             assets.total_triangles()
         );
-        if !assets.mesh(mesh).has_texture_coords() {
+        if obj_mesh.is_some_and(|mesh| !assets.mesh(mesh).has_texture_coords()) {
             println!(
                 "[engine] note: '{}' has no UV data — the texture samples a single texel, \
                  so the surface shows only the lighting",

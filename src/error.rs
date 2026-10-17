@@ -50,6 +50,11 @@ pub enum Error {
         /// Path of the scene file.
         path: String,
     },
+    /// A model path has no supported extension.
+    UnsupportedModelFormat {
+        /// Path the engine tried to open.
+        path: String,
+    },
     /// A glTF node carries a rotation or a non-uniform scale — the engine's
     /// `Transform` only understands translation and uniform scale until the
     /// animation stage brings in quaternions.
@@ -82,6 +87,10 @@ impl fmt::Display for Error {
             Error::EmptyGltfScene { path } => {
                 write!(f, "glTF scene '{path}' has no nodes in its default scene")
             }
+            Error::UnsupportedModelFormat { path } => write!(
+                f,
+                "unsupported model format for '{path}'; expected .obj, .gltf, or .glb"
+            ),
             Error::UnsupportedNodeTransform { path, node } => {
                 write!(
                     f,

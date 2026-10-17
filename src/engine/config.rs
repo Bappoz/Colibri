@@ -2,13 +2,13 @@
 
 use crate::render::RenderOptions;
 
-/// Default model loaded when `--model` is not given.
+/// Default OBJ model loaded when `--model` is not given.
 pub const DEFAULT_MODEL: &str = "assets/cube.obj";
 
 /// Everything the engine reads from the command line.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Path to the `.obj` file to display.
+    /// Path to an `.obj`, `.gltf`, or `.glb` model to display.
     pub model_path: String,
     /// Path to the texture, or `None` for the built-in procedural
     /// checkerboard.
@@ -88,7 +88,7 @@ impl EngineConfig {
             "USAGE:\n",
             "    cargo run --release -- [OPTIONS]\n\n",
             "OPTIONS:\n",
-            "    -m, --model <PATH>     .obj file to display [default: assets/cube.obj]\n",
+            "    -m, --model <PATH>     .obj, .gltf, or .glb model [default: assets/cube.obj]\n",
             "        --texture <PATH>   image file to sample [default: procedural checkerboard]\n",
             "    -t, --triangles        tint each triangle to expose the tessellation\n",
             "    -w, --wireframe        overlay triangle edges\n",
