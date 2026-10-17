@@ -55,10 +55,16 @@ pub enum Error {
         /// Path the engine tried to open.
         path: String,
     },
-    /// A glTF node carries a rotation or a non-uniform scale — the engine's
-    /// `Transform` only understands translation and uniform scale until the
-    /// animation stage brings in quaternions.
+    /// A glTF node carries non-uniform scale, which the renderer cannot
+    /// currently apply to normals correctly.
     UnsupportedNodeTransform {
+        /// Path the engine tried to open.
+        path: String,
+        /// The node's name, when the file bothered to name it.
+        node: String,
+    },
+    /// A glTF node contains a zero-length or non-finite rotation quaternion.
+    InvalidNodeRotation {
         /// Path the engine tried to open.
         path: String,
         /// The node's name, when the file bothered to name it.
@@ -94,10 +100,14 @@ impl fmt::Display for Error {
             Error::UnsupportedNodeTransform { path, node } => {
                 write!(
                     f,
-                    "node '{node}' in '{path}' has a rotation or non-uniform scale, \
-                 which Transform (Euler-angle) cannot represent yet"
+                    "node '{node}' in '{path}' has non-uniform scale, which the renderer cannot \
+                 apply to normals correctly yet"
                 )
             }
+            Error::InvalidNodeRotation { path, node } => write!(
+                f,
+                "node '{node}' in '{path}' has an invalid rotation quaternion"
+            ),
         }
     }
 }
