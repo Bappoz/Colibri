@@ -233,9 +233,9 @@ impl Mesh {
     /// indices. UVs are read as-is, with **no V-flip** —
     /// unlike `.obj`, glTF already puts the UV origin at the top-left, which
     /// matches how [`crate::assets::Texture`] samples.
-    pub fn from_gltf_primitive<'a>(
+    pub fn from_gltf_primitive<'a, 's>(
         primitive: &'a Primitive<'a>,
-        get_buffer_data: impl Clone + Fn(Buffer<'a>) -> Option<&'a [u8]>,
+        get_buffer_data: impl Clone + Fn(Buffer<'a>) -> Option<&'s [u8]>,
     ) -> std::result::Result<Self, String> {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
             return Err(format!(
