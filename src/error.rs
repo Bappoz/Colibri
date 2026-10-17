@@ -80,6 +80,19 @@ pub enum Error {
         /// UV set referenced by the material.
         tex_coord: u32,
     },
+    /// A glTF mesh primitive could not be converted into a triangle mesh.
+    GltfPrimitive {
+        /// Path the engine tried to open.
+        path: String,
+        /// The node's name, when the file bothered to name it.
+        node: String,
+        /// Index of the mesh containing the primitive.
+        mesh_index: usize,
+        /// Index of the failing primitive in its mesh.
+        primitive_index: usize,
+        /// Why the primitive is not supported or valid.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -126,6 +139,17 @@ impl fmt::Display for Error {
                 f,
                 "node '{node}' in '{path}' uses glTF texture coordinates set {tex_coord}; \
                  only set 0 is supported"
+            ),
+            Error::GltfPrimitive {
+                path,
+                node,
+                mesh_index,
+                primitive_index,
+                reason,
+            } => write!(
+                f,
+                "cannot import primitive {primitive_index} of mesh {mesh_index} on node \
+                 '{node}' from '{path}': {reason}"
             ),
         }
     }

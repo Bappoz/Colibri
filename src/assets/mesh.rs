@@ -236,28 +236,72 @@ impl Mesh {
     pub fn from_gltf_primitive<'a>(
         primitive: &'a Primitive<'a>,
         get_buffer_data: impl Clone + Fn(Buffer<'a>) -> Option<&'a [u8]>,
-    ) -> Option<Self> {
+    ) -> std::result::Result<Self, String> {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
-            return None;
+            return Err(format!(
+                "primitive mode {:?} is unsupported; only TRIANGLES is supported",
+                primitive.mode()
+            ));
         }
 
         let reader = primitive.reader(get_buffer_data);
-        let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
+        let positions: Vec<[f32; 3]> = reader
+            .read_positions()
+            .ok_or_else(|| "POSITION data or its backing buffer is missing".to_string())?
+            .collect();
+        if positions.is_empty() {
+            return Err("primitive has no vertex positions".to_string());
+        }
+
         let indices: Vec<u32> = reader
             .read_indices()
             .map(|indices| indices.into_u32().collect())
             .unwrap_or_else(|| (0..positions.len() as u32).collect());
+        if indices.is_empty() {
+            return Err("primitive has no triangle indices".to_string());
+        }
+        if !indices.len().is_multiple_of(3) {
+            return Err(format!(
+                "triangle index count {} is not divisible by three",
+                indices.len()
+            ));
+        }
+        if let Some(index) = indices
+            .iter()
+            .find(|&&index| index as usize >= positions.len())
+        {
+            return Err(format!(
+                "index {index} refers past the {} available vertices",
+                positions.len()
+            ));
+        }
 
         // Normals and UVs are optional in glTF; fall back the same way the
         // `.obj` loader does — zeroed normals get fixed up below, missing UVs
         // sample one flat texel.
-        let normals: Vec<[f32; 3]> = reader
-            .read_normals()
-            .map_or_else(|| vec![[0.0, 0.0, 0.0]; positions.len()], |n| n.collect());
+        let source_normals = reader.read_normals();
+        let has_normals = source_normals.is_some();
+        let normals: Vec<[f32; 3]> =
+            source_normals.map_or_else(|| vec![[0.0, 0.0, 0.0]; positions.len()], |n| n.collect());
         let uvs: Vec<[f32; 2]> = reader.read_tex_coords(0).map_or_else(
             || vec![[0.0, 0.0]; positions.len()],
             |uv| uv.into_f32().collect(),
         );
+
+        if normals.len() != positions.len() {
+            return Err(format!(
+                "normal count {} does not match position count {}",
+                normals.len(),
+                positions.len()
+            ));
+        }
+        if uvs.len() != positions.len() {
+            return Err(format!(
+                "UV set 0 count {} does not match position count {}",
+                uvs.len(),
+                positions.len()
+            ));
+        }
 
         let vertices = positions
             .into_iter()
@@ -271,10 +315,10 @@ impl Mesh {
             .collect();
 
         let mut mesh = Self { vertices, indices };
-        if !mesh.vertices.iter().any(|v| v.normal != [0.0, 0.0, 0.0]) {
+        if !has_normals || !mesh.vertices.iter().any(|v| v.normal != [0.0, 0.0, 0.0]) {
             mesh.compute_vertex_normals();
         }
-        Some(mesh)
+        Ok(mesh)
     }
 }
 
