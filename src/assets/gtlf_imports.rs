@@ -82,11 +82,7 @@ fn spawn_node(
         scene.world.insert(entity, Parent(parent));
     }
 
-    if let Some(mesh_handle) = spawn_first_primitive_mesh(assets, buffers, node) {
-        scene
-            .world
-            .insert(entity, MeshRenderer::new(mesh_handle, fallback_texture));
-    }
+    spawn_mesh_primitives(scene, assets, buffers, node, entity, fallback_texture);
 
     spawned.push(entity);
 
@@ -105,19 +101,45 @@ fn spawn_node(
     Ok(())
 }
 
-/// Registers the node's first mesh primitive as a [`Mesh`] and returns its
-/// handle — glTF allows several primitives per mesh (one per material); a
-/// node with more than one gets only the first until materials are imported.
-fn spawn_first_primitive_mesh(
+/// Registers each supported primitive as a separate drawable entity.
+///
+/// The first drawable shares the node entity and its transform. Additional
+/// drawables are identity-transform children, so they inherit the node's
+/// world transform while remaining separate for per-primitive materials.
+fn spawn_mesh_primitives(
+    scene: &mut Scene,
     assets: &mut Assets,
     buffers: &[gltf::buffer::Data],
     node: &gltf::Node,
-) -> Option<MeshHandle> {
-    let primitive = node.mesh()?.primitives().next()?;
+    node_entity: Entity,
+    fallback_texture: TextureHandle,
+) {
+    let Some(mesh) = node.mesh() else {
+        return;
+    };
+
+    let mut node_has_drawable = false;
     let get_buffer_data =
         |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice());
-    let mesh = Mesh::from_gltf_primitive(&primitive, get_buffer_data)?;
-    Some(assets.add_mesh(mesh))
+
+    for primitive in mesh.primitives() {
+        let Some(mesh) = Mesh::from_gltf_primitive(&primitive, get_buffer_data.clone()) else {
+            continue;
+        };
+        let mesh_handle: MeshHandle = assets.add_mesh(mesh);
+        let renderer = MeshRenderer::new(mesh_handle, fallback_texture);
+
+        if !node_has_drawable {
+            scene.world.insert(node_entity, renderer);
+            node_has_drawable = true;
+            continue;
+        }
+
+        let primitive_entity = scene.world.spawn();
+        scene.world.insert(primitive_entity, Transform::IDENTITY);
+        scene.world.insert(primitive_entity, Parent(node_entity));
+        scene.world.insert(primitive_entity, renderer);
+    }
 }
 
 /// Converts one node's glTF transform into a [`Transform`], rejecting
