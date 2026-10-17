@@ -70,6 +70,16 @@ pub enum Error {
         /// The node's name, when the file bothered to name it.
         node: String,
     },
+    /// A glTF base-color texture references a UV set other than the one the
+    /// mesh format currently stores.
+    UnsupportedGltfTexCoord {
+        /// Path the engine tried to open.
+        path: String,
+        /// The node's name, when the file bothered to name it.
+        node: String,
+        /// UV set referenced by the material.
+        tex_coord: u32,
+    },
 }
 
 impl fmt::Display for Error {
@@ -107,6 +117,15 @@ impl fmt::Display for Error {
             Error::InvalidNodeRotation { path, node } => write!(
                 f,
                 "node '{node}' in '{path}' has an invalid rotation quaternion"
+            ),
+            Error::UnsupportedGltfTexCoord {
+                path,
+                node,
+                tex_coord,
+            } => write!(
+                f,
+                "node '{node}' in '{path}' uses glTF texture coordinates set {tex_coord}; \
+                 only set 0 is supported"
             ),
         }
     }

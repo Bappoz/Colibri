@@ -1,6 +1,6 @@
-//! Imports a glTF scene's node tree into a [`Scene`], one entity per node.
+//! Imports a glTF scene's node tree into a [`Scene`].
 
-use crate::assets::{Assets, Mesh, MeshHandle, TextureHandle};
+use crate::assets::{Assets, Mesh, MeshHandle, Texture, TextureHandle};
 use crate::ecs::Entity;
 use crate::error::{Error, Result};
 use crate::math::Vec3d;
@@ -9,22 +9,27 @@ use crate::scene::{MeshRenderer, Parent, Scene, Transform};
 /// Loads `path` and spawns one entity per node of its default scene,
 /// preserving the `Parent` relationships from the file.
 ///
-/// Every spawned entity gets a [`Transform`]; a node with a [`Mesh`] also
-/// gets a [`MeshRenderer`] sampling `fallback_texture` (glTF materials are not
-/// imported yet — every node shares one texture until that lands).
+/// Every spawned node gets a [`Transform`]. Mesh primitives keep separate
+/// [`MeshRenderer`] entities so the importer can apply each primitive's
+/// base-color factor and texture. Primitives without an explicit material use
+/// `fallback_texture`.
+///
+/// The renderer is opaque: base-color alpha, metallic/roughness, and sampler
+/// settings are not applied. Only UV set 0 is supported, and non-uniform node
+/// scale is rejected because the renderer does not yet transform normals with
+/// an inverse-transpose matrix.
 ///
 /// # Errors
 ///
-/// Fails on a malformed file, an empty default scene, or a node whose
-/// rotation or non-uniform scale `Transform` cannot represent (see the
-/// module docs on [`crate::scene`] for why).
+/// Fails on a malformed file, an empty default scene, an invalid rotation,
+/// non-uniform scale, or a material that references a UV set other than 0.
 pub fn spawn_gltf_scene(
     scene: &mut Scene,
     assets: &mut Assets,
     path: &str,
     fallback_texture: TextureHandle,
 ) -> Result<Vec<Entity>> {
-    let (document, buffers, _images) = gltf::import(path).map_err(|e| Error::GltfLoad {
+    let (document, buffers, images) = gltf::import(path).map_err(|e| Error::GltfLoad {
         path: path.to_string(),
         reason: e.to_string(),
     })?;
@@ -45,13 +50,18 @@ pub fn spawn_gltf_scene(
     }
 
     let mut spawned = Vec::new();
+    let mut image_textures = vec![None; images.len()];
+    let white_texture = assets.add_texture(Texture::white());
     for node in root_nodes {
         spawn_node(
             scene,
             assets,
             path,
             &buffers,
+            &images,
+            &mut image_textures,
             fallback_texture,
+            white_texture,
             &node,
             None,
             &mut spawned,
@@ -70,7 +80,10 @@ fn spawn_node(
     assets: &mut Assets,
     path: &str,
     buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    image_textures: &mut [Option<TextureHandle>],
     fallback_texture: TextureHandle,
+    white_texture: TextureHandle,
     node: &gltf::Node,
     parent: Option<Entity>,
     spawned: &mut Vec<Entity>,
@@ -82,7 +95,18 @@ fn spawn_node(
         scene.world.insert(entity, Parent(parent));
     }
 
-    spawn_mesh_primitives(scene, assets, buffers, node, entity, fallback_texture);
+    spawn_mesh_primitives(
+        scene,
+        assets,
+        path,
+        buffers,
+        images,
+        image_textures,
+        node,
+        entity,
+        fallback_texture,
+        white_texture,
+    )?;
 
     spawned.push(entity);
 
@@ -92,7 +116,10 @@ fn spawn_node(
             assets,
             path,
             buffers,
+            images,
+            image_textures,
             fallback_texture,
+            white_texture,
             &child,
             Some(entity),
             spawned,
@@ -106,16 +133,21 @@ fn spawn_node(
 /// The first drawable shares the node entity and its transform. Additional
 /// drawables are identity-transform children, so they inherit the node's
 /// world transform while remaining separate for per-primitive materials.
+#[allow(clippy::too_many_arguments)]
 fn spawn_mesh_primitives(
     scene: &mut Scene,
     assets: &mut Assets,
+    path: &str,
     buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
+    image_textures: &mut [Option<TextureHandle>],
     node: &gltf::Node,
     node_entity: Entity,
     fallback_texture: TextureHandle,
-) {
+    white_texture: TextureHandle,
+) -> Result<()> {
     let Some(mesh) = node.mesh() else {
-        return;
+        return Ok(());
     };
 
     let mut node_has_drawable = false;
@@ -127,7 +159,17 @@ fn spawn_mesh_primitives(
             continue;
         };
         let mesh_handle: MeshHandle = assets.add_mesh(mesh);
-        let renderer = MeshRenderer::new(mesh_handle, fallback_texture);
+        let renderer = renderer_for_primitive(
+            assets,
+            path,
+            node,
+            images,
+            image_textures,
+            &primitive,
+            mesh_handle,
+            fallback_texture,
+            white_texture,
+        )?;
 
         if !node_has_drawable {
             scene.world.insert(node_entity, renderer);
@@ -140,6 +182,68 @@ fn spawn_mesh_primitives(
         scene.world.insert(primitive_entity, Parent(node_entity));
         scene.world.insert(primitive_entity, renderer);
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn renderer_for_primitive(
+    assets: &mut Assets,
+    path: &str,
+    node: &gltf::Node,
+    images: &[gltf::image::Data],
+    image_textures: &mut [Option<TextureHandle>],
+    primitive: &gltf::Primitive,
+    mesh: MeshHandle,
+    fallback_texture: TextureHandle,
+    white_texture: TextureHandle,
+) -> Result<MeshRenderer> {
+    let material = primitive.material();
+    let Some(_material_index) = material.index() else {
+        return Ok(MeshRenderer::new(mesh, fallback_texture));
+    };
+
+    let pbr = material.pbr_metallic_roughness();
+    let factor = pbr.base_color_factor();
+    let tint = color_factor_to_tint(factor);
+    let texture = if let Some(info) = pbr.base_color_texture() {
+        if info.tex_coord() != 0 {
+            return Err(Error::UnsupportedGltfTexCoord {
+                path: path.to_string(),
+                node: node.name().unwrap_or("<unnamed>").to_string(),
+                tex_coord: info.tex_coord(),
+            });
+        }
+
+        let image_index = info.texture().source().index();
+        let cached_texture =
+            image_textures
+                .get_mut(image_index)
+                .ok_or_else(|| Error::GltfLoad {
+                    path: path.to_string(),
+                    reason: format!("material references missing image {image_index}"),
+                })?;
+        if let Some(texture) = *cached_texture {
+            texture
+        } else {
+            let image = images.get(image_index).ok_or_else(|| Error::GltfLoad {
+                path: path.to_string(),
+                reason: format!("material references missing image data {image_index}"),
+            })?;
+            let texture = assets.add_texture(Texture::from_gltf_image(path, image)?);
+            *cached_texture = Some(texture);
+            texture
+        }
+    } else {
+        white_texture
+    };
+
+    Ok(MeshRenderer::new(mesh, texture).with_tint(tint))
+}
+
+/// Packs the RGB components of a glTF base color factor into `0x00RRGGBB`.
+fn color_factor_to_tint(factor: [f32; 4]) -> u32 {
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (channel(factor[0]) << 16) | (channel(factor[1]) << 8) | channel(factor[2])
 }
 
 /// Converts one node's glTF transform into a [`Transform`], rejecting

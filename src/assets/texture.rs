@@ -62,6 +62,60 @@ impl Texture {
         Ok(Self::from_pixels(width, height, pixels))
     }
 
+    /// Converts decoded glTF image data to the renderer's opaque RGB format.
+    pub(crate) fn from_gltf_image(path: &str, image: &gltf::image::Data) -> Result<Self> {
+        use gltf::image::Format;
+
+        let (channels, bytes_per_channel) = match image.format {
+            Format::R8 => (1, 1),
+            Format::R8G8 => (2, 1),
+            Format::R8G8B8 => (3, 1),
+            Format::R8G8B8A8 => (4, 1),
+            Format::R16 => (1, 2),
+            Format::R16G16 => (2, 2),
+            Format::R16G16B16 => (3, 2),
+            Format::R16G16B16A16 => (4, 2),
+            Format::R32G32B32FLOAT => (3, 4),
+            Format::R32G32B32A32FLOAT => (4, 4),
+        };
+        let pixel_count = (image.width as usize).checked_mul(image.height as usize);
+        let bytes_per_pixel = channels * bytes_per_channel;
+        let invalid_image = || Error::GltfLoad {
+            path: path.to_string(),
+            reason: format!(
+                "decoded image has invalid dimensions or data length ({}x{}, {:?})",
+                image.width, image.height, image.format
+            ),
+        };
+        let pixel_count = pixel_count.ok_or_else(&invalid_image)?;
+        let expected_bytes = pixel_count
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(&invalid_image)?;
+
+        if image.width == 0 || image.height == 0 || expected_bytes != image.pixels.len() {
+            return Err(invalid_image());
+        }
+
+        let mut pixels = Vec::with_capacity(pixel_count);
+        for pixel in image.pixels.chunks_exact(bytes_per_pixel) {
+            let mut color = [0u8; 4];
+            for channel in 0..channels {
+                let start = channel * bytes_per_channel;
+                color[channel] =
+                    gltf_channel_to_u8(&pixel[start..start + bytes_per_channel], image.format);
+            }
+
+            // Single-channel and luminance-alpha formats are grayscale.
+            let (r, g, b) = match channels {
+                1 | 2 => (color[0], color[0], color[0]),
+                _ => (color[0], color[1], color[2]),
+            };
+            pixels.push((r as u32) << 16 | (g as u32) << 8 | b as u32);
+        }
+
+        Ok(Self::from_pixels(image.width, image.height, pixels))
+    }
+
     /// Generates a checkerboard without touching the filesystem.
     ///
     /// Straight lines are the harshest test for perspective-correct
@@ -148,6 +202,27 @@ impl Texture {
         let x = wrap_texel(u * self.width_f, self.width, self.wrap_mask_x);
         let y = wrap_texel(v * self.height_f, self.height, self.wrap_mask_y);
         self.pixels[(y * self.width + x) as usize]
+    }
+}
+
+/// Converts one decoded glTF color channel to the renderer's 8-bit channel.
+fn gltf_channel_to_u8(bytes: &[u8], format: gltf::image::Format) -> u8 {
+    use gltf::image::Format;
+
+    match format {
+        Format::R8 | Format::R8G8 | Format::R8G8B8 | Format::R8G8B8A8 => bytes[0],
+        Format::R16 | Format::R16G16 | Format::R16G16B16 | Format::R16G16B16A16 => {
+            let value = u16::from_le_bytes([bytes[0], bytes[1]]) as u32;
+            ((value * 255 + 32_767) / 65_535) as u8
+        }
+        Format::R32G32B32FLOAT | Format::R32G32B32A32FLOAT => {
+            let value = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if value.is_nan() {
+                0
+            } else {
+                (value.clamp(0.0, 1.0) * 255.0).round() as u8
+            }
+        }
     }
 }
 
