@@ -82,11 +82,7 @@ fn spawn_node(
         scene.world.insert(entity, Parent(parent));
     }
 
-    if let Some(mesh_handle) = spawn_first_primitive_mesh(assets, buffers, node) {
-        scene
-            .world
-            .insert(entity, MeshRenderer::new(mesh_handle, fallback_texture));
-    }
+    spawn_mesh_primitives(scene, assets, buffers, node, entity, fallback_texture);
 
     spawned.push(entity);
 
@@ -105,47 +101,104 @@ fn spawn_node(
     Ok(())
 }
 
-/// Registers the node's first mesh primitive as a [`Mesh`] and returns its
-/// handle — glTF allows several primitives per mesh (one per material); a
-/// node with more than one gets only the first until materials are imported.
-fn spawn_first_primitive_mesh(
+/// Registers each supported primitive as a separate drawable entity.
+///
+/// The first drawable shares the node entity and its transform. Additional
+/// drawables are identity-transform children, so they inherit the node's
+/// world transform while remaining separate for per-primitive materials.
+fn spawn_mesh_primitives(
+    scene: &mut Scene,
     assets: &mut Assets,
     buffers: &[gltf::buffer::Data],
     node: &gltf::Node,
-) -> Option<MeshHandle> {
-    let primitive = node.mesh()?.primitives().next()?;
+    node_entity: Entity,
+    fallback_texture: TextureHandle,
+) {
+    let Some(mesh) = node.mesh() else {
+        return;
+    };
+
+    let mut node_has_drawable = false;
     let get_buffer_data =
         |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice());
-    let mesh = Mesh::from_gltf_primitive(&primitive, get_buffer_data)?;
-    Some(assets.add_mesh(mesh))
+
+    for primitive in mesh.primitives() {
+        let Some(mesh) = Mesh::from_gltf_primitive(&primitive, get_buffer_data.clone()) else {
+            continue;
+        };
+        let mesh_handle: MeshHandle = assets.add_mesh(mesh);
+        let renderer = MeshRenderer::new(mesh_handle, fallback_texture);
+
+        if !node_has_drawable {
+            scene.world.insert(node_entity, renderer);
+            node_has_drawable = true;
+            continue;
+        }
+
+        let primitive_entity = scene.world.spawn();
+        scene.world.insert(primitive_entity, Transform::IDENTITY);
+        scene.world.insert(primitive_entity, Parent(node_entity));
+        scene.world.insert(primitive_entity, renderer);
+    }
 }
 
 /// Converts one node's glTF transform into a [`Transform`], rejecting
-/// anything the engine cannot represent yet.
+/// non-uniform scale until the renderer has a correct normal transform.
 fn local_transform(path: &str, node: &gltf::Node) -> Result<Transform> {
     let (translation, rotation, scale) = node.transform().decomposed();
 
-    const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
     const TOL: f32 = 1e-5;
-    let is_identity_rotation = rotation
-        .iter()
-        .zip(IDENTITY_ROTATION)
-        .all(|(a, b)| (a - b).abs() < TOL);
     let is_uniform_scale = (scale[0] - scale[1]).abs() < TOL && (scale[1] - scale[2]).abs() < TOL;
 
-    if !is_identity_rotation || !is_uniform_scale {
+    if !is_uniform_scale {
         return Err(Error::UnsupportedNodeTransform {
             path: path.to_string(),
             node: node.name().unwrap_or("<unnamed>").to_string(),
         });
     }
 
+    let rotation = quaternion_to_euler(rotation).ok_or_else(|| Error::InvalidNodeRotation {
+        path: path.to_string(),
+        node: node.name().unwrap_or("<unnamed>").to_string(),
+    })?;
+
     Ok(Transform::from_translation(Vec3d::new(
         translation[0] as f64,
         translation[1] as f64,
         translation[2] as f64,
     ))
+    .with_rotation(rotation)
     .with_uniform_scale(scale[0] as f64))
+}
+
+/// Converts a glTF quaternion to the engine's yaw (`Y`), pitch (`X`), roll
+/// (`Z`) Euler convention, matching `Ry * Rx * Rz` in [`Transform::matrix`].
+fn quaternion_to_euler(rotation: [f32; 4]) -> Option<Vec3d> {
+    let [x, y, z, w] = rotation.map(f64::from);
+    let length = (x * x + y * y + z * z + w * w).sqrt();
+    if !length.is_finite() || length <= f64::EPSILON {
+        return None;
+    }
+
+    let (x, y, z, w) = (x / length, y / length, z / length, w / length);
+    let r11 = 1.0 - 2.0 * (y * y + z * z);
+    let r12 = 2.0 * (x * y - z * w);
+    let r13 = 2.0 * (x * z + y * w);
+    let r21 = 2.0 * (x * y + z * w);
+    let r22 = 1.0 - 2.0 * (x * x + z * z);
+    let r23 = 2.0 * (y * z - x * w);
+    let r33 = 1.0 - 2.0 * (x * x + y * y);
+
+    let pitch = (-r23).clamp(-1.0, 1.0).asin();
+    let (yaw, roll) = if pitch.cos().abs() > 1e-8 {
+        (r13.atan2(r33), r21.atan2(r22))
+    } else {
+        // At gimbal lock yaw and roll are not unique. Fix roll to zero and
+        // preserve the same combined orientation in yaw.
+        ((pitch.sin() * r12).atan2(r11), 0.0)
+    };
+
+    Some(Vec3d::new(pitch, yaw, roll))
 }
 
 #[test]
