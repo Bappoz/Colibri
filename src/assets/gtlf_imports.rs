@@ -154,11 +154,18 @@ fn spawn_mesh_primitives(
     let get_buffer_data =
         |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice());
 
+    let mesh_index = mesh.index();
     for primitive in mesh.primitives() {
-        let Some(mesh) = Mesh::from_gltf_primitive(&primitive, get_buffer_data.clone()) else {
-            continue;
-        };
-        let mesh_handle: MeshHandle = assets.add_mesh(mesh);
+        let primitive_index = primitive.index();
+        let imported_mesh = Mesh::from_gltf_primitive(&primitive, get_buffer_data.clone())
+            .map_err(|reason| Error::GltfPrimitive {
+                path: path.to_string(),
+                node: node.name().unwrap_or("<unnamed>").to_string(),
+                mesh_index,
+                primitive_index,
+                reason,
+            })?;
+        let mesh_handle: MeshHandle = assets.add_mesh(imported_mesh);
         let renderer = renderer_for_primitive(
             assets,
             path,
