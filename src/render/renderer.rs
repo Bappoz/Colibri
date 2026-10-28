@@ -482,6 +482,7 @@ fn submit_object(
 ) {
     let mesh = assets.mesh(renderer.mesh);
     let model_view_projection = *view_projection * model;
+    let normal_matrix = model.normal_matrix();
     let (width, height) = viewport;
 
     // --- vertex stage: once per unique vertex, not once per triangle ---
@@ -499,9 +500,13 @@ fn submit_object(
             vertex.normal[2] as f64,
         );
 
-        // Rotating the normal by the model matrix is only exact for a uniform
-        // scale; see `Transform::matrix`. The re-normalize absorbs the scale.
-        let world_normal = model.transform_direction(normal).normalize();
+        // The inverse-transpose preserves perpendicularity under non-uniform
+        // scale. A singular transform has no well-defined normal basis and
+        // deliberately falls back to a zero normal (ambient-only lighting).
+        let world_normal = normal_matrix
+            .as_ref()
+            .map(|matrix| matrix.transform_direction(normal).normalize())
+            .unwrap_or(Vec3d::ZERO);
 
         cache.push(ClipVertex {
             pos: model_view_projection.transform_point(position),

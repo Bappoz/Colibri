@@ -51,6 +51,12 @@ pub struct Engine {
     renderer: Renderer,
     /// What there is to draw.
     scene: Scene,
+    /// Camera pose restored by the `R` control, including imported-scene fit.
+    camera_reset: Camera,
+    /// Imported scene bounds used to adapt the initial fit to viewport resizes.
+    auto_frame_bounds: Option<(Vec3d, f64)>,
+    /// Resizing stops reframing once the user changes the camera.
+    camera_manually_adjusted: bool,
     /// Meshes and textures, shared by handle across the scene.
     assets: Assets,
     /// Keyboard and mouse state accumulated between frames.
@@ -70,6 +76,7 @@ impl Engine {
     /// after this returns, rendering a frame cannot fail.
     pub fn new(window: Window, config: EngineConfig) -> Result<Self> {
         let window = Rc::new(window);
+        let initial_size = window.inner_size();
         grab_cursor(&window);
 
         let context = Context::new(window.clone())
@@ -91,17 +98,17 @@ impl Engine {
                 path: config.model_path.clone(),
             })?;
 
-        let (scene, obj_mesh) = match extension.as_str() {
+        let (mut scene, obj_mesh, auto_frame) = match extension.as_str() {
             "obj" => {
                 let mesh = assets.load_mesh(&config.model_path)?;
                 let scene = build_demo_scene(mesh, texture, assets.mesh(mesh).bounding_radius());
-                (scene, Some(mesh))
+                (scene, Some(mesh), false)
             }
             "gltf" | "glb" => {
                 let mut scene = Scene::new();
                 *scene.camera_mut() = default_camera();
                 spawn_gltf_scene(&mut scene, &mut assets, &config.model_path, texture)?;
-                (scene, None)
+                (scene, None, true)
             }
             _ => {
                 return Err(Error::UnsupportedModelFormat {
@@ -109,6 +116,29 @@ impl Engine {
                 });
             }
         };
+
+        let mut auto_frame_bounds = None;
+        if auto_frame {
+            let aspect = if initial_size.height > 0 {
+                initial_size.width as f64 / initial_size.height as f64
+            } else {
+                1.0
+            };
+            match scene.bounding_sphere(&assets) {
+                Some((center, radius))
+                    if scene.camera_mut().frame_sphere(center, radius, aspect) =>
+                {
+                    auto_frame_bounds = Some((center, radius));
+                    println!(
+                        "[engine] framed imported scene (radius {radius:.3}, aspect {aspect:.3})"
+                    );
+                }
+                _ => println!(
+                    "[engine] scene bounds are empty or degenerate; using the default camera"
+                ),
+            }
+        }
+        let camera_reset = *scene.camera();
 
         println!(
             "[engine] loaded '{}': {} meshes, {} triangles",
@@ -134,6 +164,9 @@ impl Engine {
             surface,
             renderer,
             scene,
+            camera_reset,
+            auto_frame_bounds,
+            camera_manually_adjusted: false,
             assets,
             input: InputState::new(),
             clock: FrameClock::new(),
@@ -207,6 +240,28 @@ impl Engine {
         self.renderer
             .resize(size.width as usize, size.height as usize);
 
+        // Public `scene_mut` access is a manual camera control too. Detect a
+        // changed pose before applying any automatic adjustment on resize.
+        let camera = self.scene.camera();
+        if camera.position != self.camera_reset.position
+            || camera.yaw != self.camera_reset.yaw
+            || camera.pitch != self.camera_reset.pitch
+            || camera.fov_y != self.camera_reset.fov_y
+            || camera.near != self.camera_reset.near
+            || camera.far != self.camera_reset.far
+        {
+            self.camera_manually_adjusted = true;
+        }
+        if let Some((center, radius)) = self.auto_frame_bounds
+            && !self.camera_manually_adjusted
+            && self
+                .scene
+                .camera_mut()
+                .frame_sphere(center, radius, self.renderer.aspect_ratio())
+        {
+            self.camera_reset = *self.scene.camera();
+        }
+
         println!(
             "[engine] resize -> {}x{} (aspect {:.3})",
             size.width,
@@ -221,6 +276,7 @@ impl Engine {
     /// input, camera, then the scene's own systems.
     pub fn update(&mut self) {
         let dt = self.clock.tick();
+        let previous_camera = *self.scene.camera();
 
         let (dx, dy) = self.input.take_mouse_delta();
         self.scene
@@ -229,6 +285,14 @@ impl Engine {
         self.scene
             .camera_mut()
             .process_keyboard(&self.input, self.config.move_speed, dt);
+
+        let camera = self.scene.camera();
+        if camera.position != previous_camera.position
+            || camera.yaw != previous_camera.yaw
+            || camera.pitch != previous_camera.pitch
+        {
+            self.camera_manually_adjusted = true;
+        }
 
         self.scene.update(dt);
 
@@ -281,7 +345,8 @@ impl Engine {
                 println!("[engine] triangle tint: {}", options.debug_triangle_tint);
             }
             KeyCode::KeyR => {
-                *self.scene.camera_mut() = default_camera();
+                *self.scene.camera_mut() = self.camera_reset;
+                self.camera_manually_adjusted = false;
                 println!("[engine] camera reset");
             }
             KeyCode::KeyH => println!("{}", EngineConfig::usage()),

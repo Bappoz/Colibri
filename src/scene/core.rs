@@ -1,9 +1,12 @@
 //! The [`Scene`]: a [`World`] plus the resources every frame needs — the
 //! camera and the light — and the systems that advance it.
 
+use crate::assets::Assets;
 use crate::ecs::{Entity, Schedule, World};
+use crate::math::Vec3d;
 
 use super::camera::Camera;
+use super::hierarchy::world_matrix;
 use super::light::DirectionalLight;
 use super::mesh_renderer::MeshRenderer;
 use super::spin::spin_system;
@@ -84,6 +87,57 @@ impl Scene {
     /// Number of drawable entities.
     pub fn drawable_count(&self) -> usize {
         self.drawables().count()
+    }
+
+    /// Computes a conservative world-space bounding sphere for every drawable
+    /// mesh, including all vertices and their parent transforms.
+    ///
+    /// The sphere is centered on the combined world-space AABB. Non-finite
+    /// vertices are ignored; `None` means no finite drawable vertices exist.
+    /// A zero-radius result is valid but cannot be used to frame a camera.
+    pub fn bounding_sphere(&self, assets: &Assets) -> Option<(Vec3d, f64)> {
+        let mut min = Vec3d::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Vec3d::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut found_vertex = false;
+
+        for (entity, renderer, _) in self.world.query2::<MeshRenderer, Transform>() {
+            let model = world_matrix(&self.world, entity);
+            for vertex in &assets.mesh(renderer.mesh).vertices {
+                let position = model
+                    .transform_point(Vec3d::new(
+                        vertex.position[0] as f64,
+                        vertex.position[1] as f64,
+                        vertex.position[2] as f64,
+                    ))
+                    .xyz();
+                if !position.x().is_finite()
+                    || !position.y().is_finite()
+                    || !position.z().is_finite()
+                {
+                    continue;
+                }
+
+                min = Vec3d::new(
+                    min.x().min(position.x()),
+                    min.y().min(position.y()),
+                    min.z().min(position.z()),
+                );
+                max = Vec3d::new(
+                    max.x().max(position.x()),
+                    max.y().max(position.y()),
+                    max.z().max(position.z()),
+                );
+                found_vertex = true;
+            }
+        }
+
+        if !found_vertex {
+            return None;
+        }
+
+        let center = (min + max) * 0.5;
+        let radius = ((max - min) * 0.5).length();
+        (radius.is_finite()).then_some((center, radius))
     }
 
     /// Number of live entities, drawable or not.

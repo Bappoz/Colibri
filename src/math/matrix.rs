@@ -92,9 +92,8 @@ impl Mat4x4 {
 
     /// Non-uniform scale by `s`.
     ///
-    /// Note that a non-uniform scale invalidates the "rotate the normal with
-    /// the model matrix" shortcut used by the renderer; see
-    /// [`crate::scene::Transform`] for the trade-off taken there.
+    /// The renderer derives the inverse-transpose normal transform from the
+    /// model matrix, so non-uniform scales preserve correct lighting.
     pub const fn scale(s: Vec3d) -> Self {
         Self {
             m: [
@@ -216,6 +215,110 @@ impl Mat4x4 {
     /// scale; otherwise the inverse-transpose would be required.
     pub fn transform_direction(&self, d: Vec3d) -> Vec3d {
         (*self * Vec4d::from_vec3(d, 0.0)).xyz()
+    }
+
+    /// Builds the inverse-transpose of the upper-left 3x3 linear transform,
+    /// which maps normals into the transformed surface's perpendicular space.
+    ///
+    /// Translation is ignored. Uniform orthogonal transforms use the original
+    /// matrix because its direction transform differs from the inverse-
+    /// transpose only by a positive scalar, removed when the result is
+    /// normalized. Other transforms use the cofactor matrix, computed once per
+    /// object and reused for all its vertices.
+    ///
+    /// Returns `None` when the linear transform is non-finite or singular (or
+    /// too close to singular for a stable inverse). A renderer can then use
+    /// ambient-only lighting for that object instead of producing NaNs.
+    pub fn normal_matrix(&self) -> Option<Self> {
+        let mut linear = [[0.0; 3]; 3];
+        let mut max_abs: f64 = 0.0;
+        for (row, values) in linear.iter_mut().enumerate() {
+            for (col, value) in values.iter_mut().enumerate() {
+                *value = self.m[row][col];
+                if !value.is_finite() {
+                    return None;
+                }
+                max_abs = max_abs.max(value.abs());
+            }
+        }
+        if max_abs == 0.0 {
+            return None;
+        }
+
+        // Normalize first so determinant and cofactor arithmetic stays in a
+        // bounded range even when a model is very large or very small. The
+        // omitted positive scale cannot change a normalized normal.
+        for row in &mut linear {
+            for value in row {
+                *value /= max_abs;
+            }
+        }
+
+        let columns = [
+            Vec3d::new(linear[0][0], linear[1][0], linear[2][0]),
+            Vec3d::new(linear[0][1], linear[1][1], linear[2][1]),
+            Vec3d::new(linear[0][2], linear[1][2], linear[2][2]),
+        ];
+        let lengths_squared = columns.map(|column| column.length_squared());
+        let uniform_scale = lengths_squared[0] > 0.0
+            && lengths_squared
+                .iter()
+                .all(|length| (length - lengths_squared[0]).abs() <= 1e-10)
+            && columns[0].dot(&columns[1]).abs() <= 1e-10
+            && columns[0].dot(&columns[2]).abs() <= 1e-10
+            && columns[1].dot(&columns[2]).abs() <= 1e-10;
+        if uniform_scale {
+            return Some(*self);
+        }
+
+        // Cofactor matrix C = det(A) * inverse-transpose(A).
+        let [a, b, c] = linear;
+        let cofactors = [
+            [
+                b[1] * c[2] - b[2] * c[1],
+                b[2] * c[0] - b[0] * c[2],
+                b[0] * c[1] - b[1] * c[0],
+            ],
+            [
+                a[2] * c[1] - a[1] * c[2],
+                a[0] * c[2] - a[2] * c[0],
+                a[1] * c[0] - a[0] * c[1],
+            ],
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ],
+        ];
+        let determinant = a[0] * cofactors[0][0] + a[1] * cofactors[0][1] + a[2] * cofactors[0][2];
+        if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+            return None;
+        }
+
+        let inverse_determinant = 1.0 / determinant;
+        Some(Self {
+            m: [
+                Vec4d::new(
+                    cofactors[0][0] * inverse_determinant,
+                    cofactors[0][1] * inverse_determinant,
+                    cofactors[0][2] * inverse_determinant,
+                    0.0,
+                ),
+                Vec4d::new(
+                    cofactors[1][0] * inverse_determinant,
+                    cofactors[1][1] * inverse_determinant,
+                    cofactors[1][2] * inverse_determinant,
+                    0.0,
+                ),
+                Vec4d::new(
+                    cofactors[2][0] * inverse_determinant,
+                    cofactors[2][1] * inverse_determinant,
+                    cofactors[2][2] * inverse_determinant,
+                    0.0,
+                ),
+                Vec4d::new(0.0, 0.0, 0.0, 1.0),
+            ],
+        })
     }
 }
 

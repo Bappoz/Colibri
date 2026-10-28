@@ -15,8 +15,8 @@ pub struct Transform {
     /// Euler angles in radians, applied as yaw (`y`), then pitch (`x`), then
     /// roll (`z`).
     pub rotation: Vec3d,
-    /// Per-axis scale. Keep it uniform unless you also fix the normal
-    /// transform — see [`Transform::matrix`].
+    /// Per-axis scale. The renderer uses the inverse-transpose normal matrix,
+    /// so non-uniform scales are supported.
     pub scale: Vec3d,
 }
 
@@ -50,6 +50,12 @@ impl Transform {
         self
     }
 
+    /// Builder-style per-axis scale.
+    pub const fn with_scale(mut self, scale: Vec3d) -> Self {
+        self.scale = scale;
+        self
+    }
+
     /// Builder-style Euler rotation, in radians.
     pub const fn with_rotation(mut self, rotation: Vec3d) -> Self {
         self.rotation = rotation;
@@ -63,10 +69,9 @@ impl Transform {
     ///
     /// # Normals
     ///
-    /// The renderer transforms normals with this same matrix, which is only
-    /// correct while the scale is uniform. Non-uniform scale would require the
-    /// inverse transpose of the upper 3x3 block; the cheap path is kept until
-    /// a scene actually needs squashed objects.
+    /// Positions use this matrix directly. Normals use its inverse-transpose
+    /// upper 3x3 block ([`Mat4x4::normal_matrix`]), so non-uniform scaling does
+    /// not skew the surface direction used for lighting.
     pub fn matrix(&self) -> Mat4x4 {
         Mat4x4::translation(self.translation)
             * Mat4x4::rotation_y(self.rotation.y())
