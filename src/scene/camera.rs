@@ -41,6 +41,8 @@ pub struct Camera {
 /// A wider lens exaggerates perspective near the screen edges; 60° vertical is
 /// the usual compromise between "can see enough" and "does not look warped".
 const DEFAULT_FOV_Y: f64 = std::f64::consts::FRAC_PI_3;
+/// A little breathing room between fitted geometry and every viewport edge.
+const FRAME_PADDING: f64 = 1.08;
 
 impl Default for Camera {
     /// A camera at the origin looking down `-Z`, with a 60° vertical FOV.
@@ -96,6 +98,56 @@ impl Camera {
     /// (width / height).
     pub fn projection_matrix(&self, aspect: f64) -> Mat4x4 {
         Mat4x4::perspective(self.fov_y, aspect, self.near, self.far)
+    }
+
+    /// Positions the camera to fit a world-space sphere for the given viewport
+    /// aspect ratio, preserving the camera's current viewing direction.
+    ///
+    /// The distance uses the narrower of the horizontal and vertical half
+    /// fields of view, so the whole sphere remains visible in both portrait and
+    /// landscape viewports. Near and far planes are adjusted to the fitted
+    /// scene. Returns `false` without changing the camera for empty, degenerate,
+    /// or non-finite bounds.
+    pub fn frame_sphere(&mut self, center: Vec3d, radius: f64, aspect: f64) -> bool {
+        if !center.x().is_finite()
+            || !center.y().is_finite()
+            || !center.z().is_finite()
+            || !radius.is_finite()
+            || radius <= 0.0
+        {
+            return false;
+        }
+
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
+        let fov_y = self.fov_y.clamp(1e-3, std::f64::consts::PI - 1e-3);
+        let half_vertical = fov_y * 0.5;
+        let half_horizontal = (half_vertical.tan() * aspect).atan();
+        let half_fov = half_vertical.min(half_horizontal);
+        let distance = radius / half_fov.sin() * FRAME_PADDING;
+        let near = ((distance - radius) * 0.5)
+            .max(radius * 1e-4)
+            .max(f64::MIN_POSITIVE);
+        let far = (distance + radius) * FRAME_PADDING;
+        let position = center - self.forward() * distance;
+        if !distance.is_finite()
+            || !near.is_finite()
+            || !far.is_finite()
+            || !position.x().is_finite()
+            || !position.y().is_finite()
+            || !position.z().is_finite()
+            || far <= near
+        {
+            return false;
+        }
+
+        self.position = position;
+        self.near = near;
+        self.far = far;
+        true
     }
 
     /// Applies a raw mouse delta, in pixels, scaled by `sensitivity`.
