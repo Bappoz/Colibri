@@ -15,14 +15,13 @@ use crate::scene::{MeshRenderer, Parent, Scene, Transform};
 /// `fallback_texture`.
 ///
 /// The renderer is opaque: base-color alpha, metallic/roughness, and sampler
-/// settings are not applied. Only UV set 0 is supported, and non-uniform node
-/// scale is rejected because the renderer does not yet transform normals with
-/// an inverse-transpose matrix.
+/// settings are not applied. Only UV set 0 is supported. Non-uniform node
+/// scales are preserved and shaded with an inverse-transpose normal matrix.
 ///
 /// # Errors
 ///
 /// Fails on a malformed file, an empty default scene, an invalid rotation,
-/// non-uniform scale, or a material that references a UV set other than 0.
+/// or a material that references a UV set other than 0.
 pub fn spawn_gltf_scene(
     scene: &mut Scene,
     assets: &mut Assets,
@@ -253,20 +252,9 @@ fn color_factor_to_tint(factor: [f32; 4]) -> u32 {
     (channel(factor[0]) << 16) | (channel(factor[1]) << 8) | channel(factor[2])
 }
 
-/// Converts one node's glTF transform into a [`Transform`], rejecting
-/// non-uniform scale until the renderer has a correct normal transform.
+/// Converts one node's glTF transform into a [`Transform`].
 fn local_transform(path: &str, node: &gltf::Node) -> Result<Transform> {
     let (translation, rotation, scale) = node.transform().decomposed();
-
-    const TOL: f32 = 1e-5;
-    let is_uniform_scale = (scale[0] - scale[1]).abs() < TOL && (scale[1] - scale[2]).abs() < TOL;
-
-    if !is_uniform_scale {
-        return Err(Error::UnsupportedNodeTransform {
-            path: path.to_string(),
-            node: node.name().unwrap_or("<unnamed>").to_string(),
-        });
-    }
 
     let rotation = quaternion_to_euler(rotation).ok_or_else(|| Error::InvalidNodeRotation {
         path: path.to_string(),
@@ -279,7 +267,11 @@ fn local_transform(path: &str, node: &gltf::Node) -> Result<Transform> {
         translation[2] as f64,
     ))
     .with_rotation(rotation)
-    .with_uniform_scale(scale[0] as f64))
+    .with_scale(Vec3d::new(
+        scale[0] as f64,
+        scale[1] as f64,
+        scale[2] as f64,
+    )))
 }
 
 /// Converts a glTF quaternion to the engine's yaw (`Y`), pitch (`X`), roll

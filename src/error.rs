@@ -55,14 +55,6 @@ pub enum Error {
         /// Path the engine tried to open.
         path: String,
     },
-    /// A glTF node carries non-uniform scale, which the renderer cannot
-    /// currently apply to normals correctly.
-    UnsupportedNodeTransform {
-        /// Path the engine tried to open.
-        path: String,
-        /// The node's name, when the file bothered to name it.
-        node: String,
-    },
     /// A glTF node contains a zero-length or non-finite rotation quaternion.
     InvalidNodeRotation {
         /// Path the engine tried to open.
@@ -120,13 +112,6 @@ impl fmt::Display for Error {
                 f,
                 "unsupported model format for '{path}'; expected .obj, .gltf, or .glb"
             ),
-            Error::UnsupportedNodeTransform { path, node } => {
-                write!(
-                    f,
-                    "node '{node}' in '{path}' has non-uniform scale, which the renderer cannot \
-                 apply to normals correctly yet"
-                )
-            }
             Error::InvalidNodeRotation { path, node } => write!(
                 f,
                 "node '{node}' in '{path}' has an invalid rotation quaternion"
